@@ -1,12 +1,10 @@
 import AVFoundation
 import BackgroundTasks
-import CryptoKit
 import SwiftUI
 import UIKit
 
 @MainActor
 final class Studio: ObservableObject {
-    @Published private(set) var modelReady = FileManager.default.fileExists(atPath: Studio.model.path)
     @Published private(set) var fileName: String?
     @Published private(set) var status = ""
     @Published private(set) var progress: Double?
@@ -19,84 +17,18 @@ final class Studio: ObservableObject {
     @Published var error: String?
 
     nonisolated private static let folder = URL.applicationSupportDirectory.appendingPathComponent("MusicStudio", isDirectory: true)
-    nonisolated private static let model = folder.appendingPathComponent("sep-all-int8.onnx")
-    nonisolated private static let modelURL = URL(string: "https://huggingface.co/redbaty/ytm-vocal-separator/resolve/d9d3f27d58c4f9c0286a07ed541b18ceaa91f107/sep-all-int8.onnx")!
-    nonisolated private static let modelHash = "e9570dac2ae14382c99357a547a6739777a029ad7f2b5f6e6bc22e9b0e7b2580"
     private var control: SeparationControl?
     private var player: AVAudioPlayer?
     private var sourcePlayer: AVAudioPlayer?
     private var sourceURL: URL?
     private var playbackMonitor: Task<Void, Never>?
 
-    func downloadModel() {
-        prepareModel { destination in
-            let (temporary, response) = try await URLSession.shared.download(from: Self.modelURL)
-            defer { try? FileManager.default.removeItem(at: temporary) }
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                throw SeparationError.modelDownload
-            }
-            try Self.installModel(from: temporary, to: destination)
-        }
-    }
-
-    func importModel(_ url: URL) {
-        prepareModel { destination in
-            let granted = url.startAccessingSecurityScopedResource()
-            defer { if granted { url.stopAccessingSecurityScopedResource() } }
-            var coordinatorError: NSError?
-            var operationError: Error?
-            NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinatorError) { source in
-                do { try Self.installModel(from: source, to: destination) }
-                catch { operationError = error }
-            }
-            if let coordinatorError { throw coordinatorError }
-            if let operationError { throw operationError }
-        }
-    }
-
-    private func prepareModel(_ operation: @escaping @Sendable (URL) async throws -> Void) {
-        guard !busy else { return }
-        busy = true
-        error = nil
-        status = "正在取得並驗證離線模型，請保持 App 開啟。"
-        let destination = Self.model
-        Task {
-            defer { busy = false }
-            do {
-                try await Task.detached(priority: .userInitiated) {
-                    try await operation(destination)
-                }.value
-                modelReady = true
-                status = "離線模型已就緒。可匯入音樂。"
-            } catch {
-                status = ""
-                self.error = error.localizedDescription
-            }
-        }
-    }
-
-    nonisolated private static func installModel(from input: URL, to destination: URL) throws {
-        let manager = FileManager.default
-        try manager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let pending = destination.deletingLastPathComponent().appendingPathComponent("model-installing")
-        try? manager.removeItem(at: pending)
-        defer { try? manager.removeItem(at: pending) }
-        try manager.copyItem(at: input, to: pending)
-        let file = try FileHandle(forReadingFrom: pending)
-        defer { try? file.close() }
-        var hasher = SHA256()
-        while let data = try file.read(upToCount: 1024 * 1024), !data.isEmpty {
-            hasher.update(data: data)
-        }
-        let hash = hasher.finalize().map { String(format: "%02x", $0) }.joined()
-        guard hash == modelHash else { throw SeparationError.modelDownload }
-        try manager.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
-                                  ofItemAtPath: pending.path)
-        try manager.moveItem(at: pending, to: destination)
-    }
-
     func separate(_ input: URL) {
-        guard modelReady, !busy else { return }
+        guard !busy else { return }
+        guard let model = Bundle.main.url(forResource: "melband-phone", withExtension: "onnx") else {
+            error = "安裝包缺少離線模型。請重新下載 IPA。"
+            return
+        }
         resetPlayer()
         busy = true
         separating = true
@@ -116,7 +48,6 @@ final class Studio: ObservableObject {
         let name = String(input.deletingPathExtension().lastPathComponent.prefix(100))
         let output = Self.folder.appendingPathComponent("\(name)-伴奏.wav")
         let partial = Self.folder.appendingPathComponent("output-\(identifier).wav")
-        let model = Self.model
 
         let start: (Bool, @escaping (Double) -> Void, @escaping (Bool) -> Void) -> Void = {
             [weak self] continued, report, completion in
@@ -140,6 +71,7 @@ final class Studio: ObservableObject {
                 }
                 do {
                     try await Task.detached(priority: .userInitiated) {
+                        try FileManager.default.createDirectory(at: staged.deletingLastPathComponent(), withIntermediateDirectories: true)
                         try Self.copyInput(input, to: staged)
                         try job.check()
                         try SeparationEngine.run(input: staged, output: partial, model: model, control: job) {

@@ -12,6 +12,8 @@ targets:
       - Separator.swift
       - ORTBridge.c
       - ORTBridge.h
+      - path: Build/melband-phone.onnx
+        buildPhase: resources
       - path: MODEL-LICENSE.txt
         buildPhase: resources
       - path: Build/ORT/LICENSE
@@ -35,8 +37,8 @@ targets:
       path: Build/Info.plist
       properties:
         CFBundleDisplayName: 音樂
-        CFBundleShortVersionString: "1.0.0"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "1.0.1"
+        CFBundleVersion: "2"
         CFBundleDevelopmentRegion: zh-Hant
         UILaunchScreen: {}
         UIBackgroundModes:

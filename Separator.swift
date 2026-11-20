@@ -8,7 +8,6 @@ enum SeparationError: LocalizedError {
     case fft
     case inference(String)
     case modelOutput
-    case modelDownload
 
     var errorDescription: String? {
         switch self {
@@ -17,7 +16,6 @@ enum SeparationError: LocalizedError {
         case .fft: return "無法初始化音訊處理。"
         case .inference(let detail): return "本機模型執行失敗。\(detail)"
         case .modelOutput: return "模型傳回無效的結果。"
-        case .modelDownload: return "模型下載失敗或校驗不符，請重試。"
         }
     }
 }
@@ -42,8 +40,8 @@ final class SeparationControl: @unchecked Sendable {
 
 struct SeparationEngine {
     static let sampleRate = 44_100
-    static let chunkSize = 352_800
-    static let overlap = 35_280
+    static let chunkSize = 88_200
+    static let overlap = 8_820
     static let step = chunkSize - overlap
 
     static func run(input: URL, output: URL, model: URL, control: SeparationControl,
@@ -221,7 +219,7 @@ private final class Spectrogram {
     private let n = 2_048
     private let half = 1_024
     private let bins = 1_025
-    private let frames = 801
+    private let frames = SeparationEngine.chunkSize / 441 + 1
     private let hop = 441
     private let setup: FFTSetup
     private let hann: [Float]

@@ -43,6 +43,7 @@ MusicORT *music_ort_open(const char *path, int threads, char *error, size_t leng
         success(api, api->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "Music", &runtime->env), error, length) &&
         success(api, api->CreateSessionOptions(&options), error, length) &&
         success(api, api->SetIntraOpNumThreads(options, threads), error, length) &&
+        success(api, api->DisableCpuMemArena(options), error, length) &&
         success(api, api->SetSessionGraphOptimizationLevel(options, ORT_ENABLE_EXTENDED), error, length) &&
         success(api, api->CreateSession(runtime->env, path, options, &runtime->session), error, length) &&
         success(api, api->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &runtime->memory), error, length);
@@ -54,8 +55,8 @@ MusicORT *music_ort_open(const char *path, int threads, char *error, size_t leng
 
 bool music_ort_run(MusicORT *runtime, float *spec, float *mask, char *error, size_t length) {
     const OrtApi *api = runtime->api;
-    const int64_t shape[] = {1, 4, 1025, 801};
-    const size_t bytes = 4 * 1025 * 801 * sizeof(float);
+    const int64_t shape[] = {1, 4, 1025, 201};
+    const size_t bytes = 4 * 1025 * 201 * sizeof(float);
     const char *input_names[] = {"spec"};
     const char *output_names[] = {"mask"};
     OrtValue *input = NULL;

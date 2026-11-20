@@ -19,7 +19,6 @@ struct MusicApp: App {
 private struct StudioView: View {
     @ObservedObject var studio: Studio
     @State private var pickingAudio = false
-    @State private var pickingModel = false
 
     var body: some View {
         NavigationStack {
@@ -69,14 +68,7 @@ private struct StudioView: View {
                         Text(error).font(.callout).foregroundStyle(.orange)
                     }
 
-                    if !studio.modelReady {
-                        if !studio.busy {
-                            prominent("下載離線模型（236 MB）", systemImage: "arrow.down.circle") {
-                                studio.downloadModel()
-                            }
-                            Button("從「檔案」匯入模型") { pickingModel = true }
-                        }
-                    } else if !studio.busy {
+                    if !studio.busy {
                         prominent("選擇音樂檔案", systemImage: "plus") { pickingAudio = true }
                     }
                     if studio.canPlaySource {
@@ -98,9 +90,6 @@ private struct StudioView: View {
                 case .failure(let error): studio.error = error.localizedDescription
                 }
             }
-            .sheet(isPresented: $pickingModel) {
-                ModelPicker(studio: studio)
-            }
         }
         .tint(.mint)
     }
@@ -115,35 +104,6 @@ private struct StudioView: View {
         .buttonStyle(.borderedProminent)
         .tint(.mint)
         .foregroundStyle(.black)
-    }
-}
-
-private struct ModelPicker: View {
-    @Environment(\.dismiss) private var dismiss
-    @ObservedObject var studio: Studio
-    @State private var open = false
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 16) {
-                Text("選擇 sep-all-int8.onnx")
-                Button("瀏覽檔案") { open = true }
-            }
-            .navigationTitle("匯入離線模型")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("關閉") { dismiss() }
-                }
-            }
-        }
-        .presentationDetents([.medium])
-        .fileImporter(isPresented: $open, allowedContentTypes: [.item]) { selection in
-            switch selection {
-            case .success(let url): studio.importModel(url)
-            case .failure(let error): studio.error = error.localizedDescription
-            }
-            dismiss()
-        }
     }
 }
 
