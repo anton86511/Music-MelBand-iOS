@@ -65,6 +65,7 @@ final class SeparationControl: @unchecked Sendable {
 enum SeparationMode: String, CaseIterable, Identifiable, Sendable {
     case hq4
     case hq3
+    case instMain
 
     var id: Self { self }
 
@@ -72,18 +73,32 @@ enum SeparationMode: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .hq4: return "UVR Inst HQ 4"
         case .hq3: return "UVR Inst HQ 3"
+        case .instMain: return "UVR-MDX-NET-Inst_Main"
         }
     }
 
     var fftSize: Int {
         switch self {
-        case .hq4: return 5_120
+        case .hq4, .instMain: return 5_120
         case .hq3: return 6_144
         }
     }
 
+    var frequencyBins: Int {
+        self == .instMain ? 2_048 : fftSize / 2
+    }
+
+    var outputGain: Float {
+        self == .instMain ? 1.025 : 1
+    }
+
     func modelURL(in bundle: Bundle = .main) -> URL? {
-        let resource = self == .hq4 ? "InstHQ4" : "InstHQ3"
+        let resource: String
+        switch self {
+        case .hq4: resource = "InstHQ4"
+        case .hq3: resource = "InstHQ3"
+        case .instMain: resource = "InstMain"
+        }
         return bundle.url(forResource: resource, withExtension: "mlmodelc")
     }
 }
@@ -108,7 +123,8 @@ struct SeparationEngine {
                                               ofItemAtPath: output.path)
         decodeProgress()
         try control.waitForCooling(report: cooling)
-        let fft = try Spectrogram(size: mode.fftSize, hop: 1_024, frames: 256)
+        let fft = try Spectrogram(size: mode.fftSize, bins: mode.frequencyBins, hop: 1_024,
+                                  frames: 256, outputGain: mode.outputGain)
         let separator = try SpectrogramCoreML(url: model, bins: fft.bins, frames: fft.frames)
         let overlap = 24_576
         let chunkSize = fft.sampleCount
@@ -327,7 +343,8 @@ private final class Spectrogram {
     private let hann: [Float]
     private let synthesisScale: [Float]
 
-    init(size: Int, hop: Int, frames: Int) throws {
+    init(size: Int, bins: Int, hop: Int, frames: Int, outputGain: Float) throws {
+        guard bins > 0, bins <= size / 2 else { throw SeparationError.fft }
         let length = vDSP_Length(size)
         guard let forward = vDSP_DFT_zop_CreateSetup(nil, length, .FORWARD) else { throw SeparationError.fft }
         guard let inverse = vDSP_DFT_zop_CreateSetup(nil, length, .INVERSE) else {
@@ -347,10 +364,10 @@ private final class Spectrogram {
         self.forward = forward
         self.inverse = inverse
         self.hann = hann
-        self.synthesisScale = norm.map { 1 / (Float(size) * max($0, 0.000001)) }
+        self.synthesisScale = norm.map { outputGain / (Float(size) * max($0, 0.000001)) }
         self.n = size
         self.half = half
-        self.bins = half
+        self.bins = bins
         self.frames = frames
         self.hop = hop
         self.sampleCount = count
