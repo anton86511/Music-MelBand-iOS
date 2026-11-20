@@ -1,0 +1,42 @@
+name: Build Music IPA
+on:
+  push:
+    branches: [main]
+    paths:
+      - "*.swift"
+      - "ORTBridge.*"
+      - "project.yml"
+      - "build-ipa.sh"
+      - ".github/workflows/ipa.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: music-ipa-main
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - run: bash build-ipa.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Music-unsigned-IPA
+          path: dist/
+      - name: Publish GitHub Release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release="ios-${GITHUB_RUN_NUMBER}"
+          if gh release view "$release" >/dev/null 2>&1; then
+            gh release upload "$release" dist/* --clobber
+          else
+            gh release create "$release" dist/* --target "$GITHUB_SHA" --title "音樂 IPA · ${GITHUB_RUN_NUMBER}" --notes "LiveContainer 匯入版。首次使用需下載離線模型。音檔在 iPhone 本機分離。"
+          fi
