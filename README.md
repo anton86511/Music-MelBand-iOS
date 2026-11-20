@@ -22,6 +22,6 @@ UVR Inst HQ 4 的 ONNX 權重來自 [UVR_resources](https://huggingface.co/Polit
 
 ## BS-RoFormer Leap Xe
 
-選擇 Leap Xe 後，點「下載 Leap Xe」。App 從 [pcunwa 的原始模型頁](https://huggingface.co/pcunwa/BS-Roformer-Leap/tree/main/Xe) 下載並驗證約 268 MB 的人聲權重，在裝置上組裝、編譯並儲存 Core ML 模型。之後可離線處理。Leap Xe 用約 2.23 秒的交疊視窗控制裝置記憶體，分離結果可能與原始長視窗設定有差異。
+選擇 Leap Xe 後，點「下載 Leap Xe」。App 從 [pcunwa 的原始模型頁](https://huggingface.co/pcunwa/BS-Roformer-Leap/tree/main/Xe) 下載並驗證約 268 MB 的人聲權重，在裝置上組裝、編譯並儲存 Core ML 模型。之後可離線處理。Leap Xe 以 FP32 推論，使用約 2.23 秒的交疊視窗控制裝置記憶體，分離結果可能與原始長視窗設定有差異。
 
 CI 會從相同的作者檢查點重建模型並驗證 Core ML 輸出。

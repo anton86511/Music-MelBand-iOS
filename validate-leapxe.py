@@ -1,43 +1,10 @@
-"""Reconstruct the downloaded Leap Xe package and smoke-test Core ML on macOS."""
+"""Compare the reconstructed Leap Xe model against a PyTorch reference on macOS."""
 import argparse
-import hashlib
 import json
-import shutil
 from pathlib import Path
 
 import coremltools as ct
 import numpy as np
-
-
-def restore(template: Path, checkpoint: Path, package: Path):
-    plan = json.loads((template / "plan.json").read_text())
-    raw_hash = "b739c1d2d87a81cd3dd3844ed9ad0bd678708c7a0a761a03a1aaff9af79a096d"
-    with checkpoint.open("rb") as source:
-        if hashlib.file_digest(source, "sha256").hexdigest() != raw_hash:
-            raise ValueError("Unexpected author checkpoint revision.")
-    shutil.rmtree(package, ignore_errors=True)
-    core = package / "Data/com.apple.CoreML"
-    (core / "weights").mkdir(parents=True)
-    shutil.copyfile(template / "Manifest.json", package / "Manifest.json")
-    spec = core / "model.mlmodel"
-    weights = core / "weights/weight.bin"
-    shutil.copyfile(template / "model.template", spec)
-    with (checkpoint.open("rb") as source, (template / "literals.bin").open("rb") as literal,
-          spec.open("r+b") as model, weights.open("w+b") as weight_file):
-        weight_file.truncate(plan["weightsSize"])
-        for p in plan["patches"]:
-            stream = literal if p["kind"] == "literal" else source
-            out = model if p["target"] == 0 else weight_file
-            stream.seek(p["source"])
-            data = stream.read(p["count"] * (1 if p["kind"] == "literal" else 4))
-            if p["kind"] == "f16":
-                data = np.frombuffer(data, dtype="<f4").astype("<f2").tobytes()
-            out.seek(p["offset"])
-            out.write(data)
-    for name, key in ((spec, "modelSHA"), (weights, "weightsSHA")):
-        with name.open("rb") as stream:
-            if hashlib.file_digest(stream, "sha256").hexdigest() != plan[key]:
-                raise ValueError(f"Reconstructed {key} failed validation.")
 
 
 def test_input():
@@ -53,11 +20,9 @@ def test_input():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for argument in ("template", "checkpoint", "package", "reference"):
+    for argument in ("package", "reference"):
         parser.add_argument(argument, type=Path)
     args = parser.parse_args()
-    restore(args.template, args.checkpoint, args.package)
-    print("Leap Xe checkpoint hydration passed both SHA-256 checks.", flush=True)
     model = ct.models.MLModel(str(args.package), compute_units=ct.ComputeUnit.CPU_AND_GPU)
     output = model.predict({"mix": test_input()})["mask"]
     if output.shape != (1, 4, 1025, 193) or not np.isfinite(output).all():

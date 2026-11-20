@@ -51,9 +51,6 @@ enum LeapXeInstaller {
         let fm = FileManager.default
         defer { try? fm.removeItem(at: archive) }
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw InstallError.download }
-        let attributes = try fm.attributesOfItem(atPath: archive.path)
-        guard (attributes[.size] as? NSNumber)?.uint64Value == checkpointLength,
-              try sha256(archive) == checkpointSHA else { throw InstallError.integrity }
 
         try fm.createDirectory(at: folder, withIntermediateDirectories: true)
         var cacheFolder = folder
@@ -64,6 +61,19 @@ enum LeapXeInstaller {
         try fm.createDirectory(at: temp, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: temp) }
         let package = temp.appendingPathComponent("LeapXe.mlpackage", isDirectory: true)
+        try assemble(checkpoint: archive, template: root, into: package)
+        let compiled = try await MLModel.compileModel(at: package)
+        defer { try? fm.removeItem(at: compiled) }
+        let staged = temp.appendingPathComponent("Compiled.mlmodelc", isDirectory: true)
+        try fm.copyItem(at: compiled, to: staged)
+        try fm.moveItem(at: staged, to: installed)
+    }
+
+    static func assemble(checkpoint: URL, template root: URL, into package: URL) throws {
+        let fm = FileManager.default
+        let attributes = try fm.attributesOfItem(atPath: checkpoint.path)
+        guard (attributes[.size] as? NSNumber)?.uint64Value == checkpointLength,
+              try sha256(checkpoint) == checkpointSHA else { throw InstallError.integrity }
         let data = package.appendingPathComponent("Data/com.apple.CoreML", isDirectory: true)
         try fm.createDirectory(at: data.appendingPathComponent("weights", isDirectory: true), withIntermediateDirectories: true)
         let specification = data.appendingPathComponent("model.mlmodel")
@@ -74,15 +84,10 @@ enum LeapXeInstaller {
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: specification.path)
         guard fm.createFile(atPath: weights.path, contents: nil) else { throw InstallError.resources }
         let recipe = try JSONDecoder().decode(Recipe.self, from: Data(contentsOf: root.appendingPathComponent("plan.json")))
-        try restore(recipe, checkpoint: archive, literals: root.appendingPathComponent("literals.bin"),
+        try restore(recipe, checkpoint: checkpoint, literals: root.appendingPathComponent("literals.bin"),
                     model: specification, weights: weights)
         guard try sha256(specification) == recipe.modelSHA, try sha256(weights) == recipe.weightsSHA
         else { throw InstallError.integrity }
-        let compiled = try await MLModel.compileModel(at: package)
-        defer { try? fm.removeItem(at: compiled) }
-        let staged = temp.appendingPathComponent("Compiled.mlmodelc", isDirectory: true)
-        try fm.copyItem(at: compiled, to: staged)
-        try fm.moveItem(at: staged, to: installed)
     }
 
     private static func restore(_ recipe: Recipe, checkpoint: URL, literals: URL, model: URL, weights: URL) throws {
@@ -97,39 +102,26 @@ enum LeapXeInstaller {
         try weightsFile.truncate(atOffset: recipe.weightsSize)
         for patch in recipe.patches {
             try Task.checkCancellation()
-            let input = patch.kind == "literal" ? constants : source
-            let output = patch.target == 0 ? modelFile : weightsFile
-            let rawByteCount = patch.kind == "literal" ? patch.count : 4 * patch.count
-            try input.seek(toOffset: patch.source)
-            let payload = try read(input, count: rawByteCount)
-            let data: Data
+            let input: FileHandle
+            let count: Int
             switch patch.kind {
-            case "literal", "f32":
-                data = payload
-            case "f16":
-                data = float16(payload, count: patch.count)
+            case "literal":
+                input = constants
+                count = patch.count
+            case "f32":
+                input = source
+                count = 4 * patch.count
             default:
                 throw InstallError.resources
             }
+            let output = patch.target == 0 ? modelFile : weightsFile
+            try input.seek(toOffset: patch.source)
+            let data = try read(input, count: count)
             try output.seek(toOffset: patch.offset)
             try output.write(contentsOf: data)
         }
         try modelFile.synchronize()
         try weightsFile.synchronize()
-    }
-
-    private static func float16(_ data: Data, count: Int) -> Data {
-        var output = Data(count: count * 2)
-        data.withUnsafeBytes { (source: UnsafeRawBufferPointer) in
-            output.withUnsafeMutableBytes { (destination: UnsafeMutableRawBufferPointer) in
-                for index in 0..<count {
-                    let bits = source.loadUnaligned(fromByteOffset: index * 4, as: UInt32.self)
-                    let half = Float16(Float(bitPattern: UInt32(littleEndian: bits))).bitPattern.littleEndian
-                    destination.storeBytes(of: half, toByteOffset: index * 2, as: UInt16.self)
-                }
-            }
-        }
-        return output
     }
 
     private static func read(_ file: FileHandle, count: Int) throws -> Data {
