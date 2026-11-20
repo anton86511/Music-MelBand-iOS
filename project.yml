@@ -39,5 +39,7 @@ targets:
         CFBundleVersion: "1"
         CFBundleDevelopmentRegion: zh-Hant
         UILaunchScreen: {}
+        UIBackgroundModes:
+          - audio
         BGTaskSchedulerPermittedIdentifiers:
           - tw.anton86511.melband.music.separation.*

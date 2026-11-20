@@ -79,6 +79,12 @@ private struct StudioView: View {
                     } else if !studio.busy {
                         prominent("選擇音樂檔案", systemImage: "plus") { pickingAudio = true }
                     }
+                    if studio.canPlaySource {
+                        Button(action: studio.toggleSourcePlayback) {
+                            Label(studio.playingSource ? "停止播放原曲" : "播放原曲並鎖屏",
+                                  systemImage: studio.playingSource ? "pause.circle" : "lock")
+                        }
+                    }
                     if studio.separating {
                         Button("取消分離", role: .destructive, action: studio.cancel)
                     }

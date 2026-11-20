@@ -6,12 +6,14 @@ import UIKit
 
 @MainActor
 final class Studio: ObservableObject {
-    @Published private(set) var modelReady = FileManager.default.fileExists(atPath: Self.model.path)
+    @Published private(set) var modelReady = FileManager.default.fileExists(atPath: Studio.model.path)
     @Published private(set) var fileName: String?
     @Published private(set) var status = ""
     @Published private(set) var progress: Double?
     @Published private(set) var busy = false
     @Published private(set) var separating = false
+    @Published private(set) var canPlaySource = false
+    @Published private(set) var playingSource = false
     @Published private(set) var playing = false
     @Published private(set) var result: URL?
     @Published var error: String?
@@ -22,6 +24,8 @@ final class Studio: ObservableObject {
     nonisolated private static let modelHash = "e9570dac2ae14382c99357a547a6739777a029ad7f2b5f6e6bc22e9b0e7b2580"
     private var control: SeparationControl?
     private var player: AVAudioPlayer?
+    private var sourcePlayer: AVAudioPlayer?
+    private var sourceURL: URL?
     private var playbackMonitor: Task<Void, Never>?
 
     func downloadModel() {
@@ -126,6 +130,9 @@ final class Studio: ObservableObject {
                 }
                 guard let self else { return }
                 defer {
+                    self.stopSourcePlayback()
+                    self.sourceURL = nil
+                    self.canPlaySource = false
                     self.busy = false
                     self.separating = false
                     self.progress = nil
@@ -138,7 +145,9 @@ final class Studio: ObservableObject {
                         try SeparationEngine.run(input: staged, output: partial, model: model, control: job) {
                             Task { @MainActor [weak self] in
                                 guard let self, self.control === job else { return }
-                                self.status = continued ? "正在分離，可嘗試鎖屏。" : "正在分離。建議保持 App 開啟。"
+                                self.sourceURL = staged
+                                self.canPlaySource = !continued
+                                self.status = continued ? "正在分離，可嘗試鎖屏。" : "正在分離。若要鎖屏，可先播放原曲。"
                             }
                         } progress: { fraction in
                             Task { @MainActor [weak self] in
@@ -215,6 +224,37 @@ final class Studio: ObservableObject {
     func cancel() {
         control?.cancel()
         status = "正在停止分離…"
+    }
+
+    func toggleSourcePlayback() {
+        if playingSource {
+            stopSourcePlayback()
+            status = "正在分離。若要鎖屏，可先播放原曲。"
+            return
+        }
+        guard separating, let sourceURL else { return }
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback)
+            try session.setActive(true)
+            let audio = try AVAudioPlayer(contentsOf: sourceURL)
+            audio.numberOfLoops = -1
+            guard audio.play() else { throw SeparationError.empty }
+            sourcePlayer = audio
+            playingSource = true
+            status = "原曲在播放，可嘗試鎖屏。完成後會自動停止。"
+        } catch {
+            self.error = "無法背景播放這個原曲。請保持 App 開啟。"
+        }
+    }
+
+    private func stopSourcePlayback() {
+        if sourcePlayer != nil {
+            sourcePlayer?.stop()
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
+        sourcePlayer = nil
+        playingSource = false
     }
 
     func togglePlayback() {
