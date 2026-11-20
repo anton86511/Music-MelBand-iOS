@@ -23,9 +23,9 @@ final class Studio: ObservableObject {
     private var sourceURL: URL?
     private var playbackMonitor: Task<Void, Never>?
 
-    func separate(_ input: URL) {
+    func separate(_ input: URL, mode: SeparationMode) {
         guard !busy else { return }
-        guard let model = Bundle.main.url(forResource: "melband-phone", withExtension: "onnx") else {
+        guard let model = mode.modelURL() else {
             error = "安裝包缺少離線模型。請重新下載 IPA。"
             return
         }
@@ -39,6 +39,7 @@ final class Studio: ObservableObject {
         if let result { try? FileManager.default.removeItem(at: result) }
         result = nil
 
+        let started = ContinuousClock.now
         let job = SeparationControl()
         control = job
         let granted = input.startAccessingSecurityScopedResource()
@@ -74,12 +75,16 @@ final class Studio: ObservableObject {
                         try FileManager.default.createDirectory(at: staged.deletingLastPathComponent(), withIntermediateDirectories: true)
                         try Self.copyInput(input, to: staged)
                         try job.check()
-                        try SeparationEngine.run(input: staged, output: partial, model: model, control: job) {
+                        try SeparationEngine.run(input: staged, output: partial, model: model, mode: mode, control: job) {
                             Task { @MainActor [weak self] in
                                 guard let self, self.control === job else { return }
                                 self.sourceURL = staged
-                                self.canPlaySource = !continued
-                                self.status = continued ? "正在分離，可嘗試鎖屏。" : "正在分離。若要鎖屏，可先播放原曲。"
+                                self.canPlaySource = mode == .quality && !continued
+                                if mode == .fast {
+                                    self.status = "正在分離，請保持畫面開啟。"
+                                } else {
+                                    self.status = continued ? "正在分離，可嘗試鎖屏。" : "正在分離。若要鎖屏，可先播放原曲。"
+                                }
                             }
                         } progress: { fraction in
                             Task { @MainActor [weak self] in
@@ -95,7 +100,9 @@ final class Studio: ObservableObject {
                     }
                     try FileManager.default.moveItem(at: partial, to: output)
                     self.result = output
-                    self.status = "分離完成，可試聽或儲存。"
+                    let elapsed = started.duration(to: .now).components
+                    let seconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
+                    self.status = "分離完成 · 耗時 \(seconds.formatted(.number.precision(.fractionLength(1)))) 秒"
                     success = true
                 } catch is CancellationError {
                     self.status = "分離已中止。可重新選取音檔。"
@@ -106,7 +113,7 @@ final class Studio: ObservableObject {
             }
         }
 
-        if #available(iOS 26.0, *),
+        if mode == .quality, #available(iOS 26.0, *),
            BackgroundSeparation.shared.submit({ task in
                task.progress.totalUnitCount = 1_000
                task.expirationHandler = { job.cancel() }

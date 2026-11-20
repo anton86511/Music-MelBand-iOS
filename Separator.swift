@@ -1,6 +1,7 @@
 import Accelerate
 import AudioToolbox
 import AVFoundation
+import CoreML
 
 enum SeparationError: LocalizedError {
     case decode(OSStatus)
@@ -38,13 +39,38 @@ final class SeparationControl: @unchecked Sendable {
     }
 }
 
+enum SeparationMode: String, CaseIterable, Identifiable, Sendable {
+    case fast
+    case quality
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .fast: return "GPU 加速"
+        case .quality: return "高品質"
+        }
+    }
+
+    var modelName: String {
+        switch self {
+        case .fast: return "UVR Inst HQ 3 · Core ML"
+        case .quality: return "Mel-Band RoFormer"
+        }
+    }
+
+    func modelURL(in bundle: Bundle = .main) -> URL? {
+        switch self {
+        case .fast: return bundle.url(forResource: "InstHQ3", withExtension: "mlmodelc")
+        case .quality: return bundle.url(forResource: "melband-phone", withExtension: "onnx")
+        }
+    }
+}
+
 struct SeparationEngine {
     static let sampleRate = 44_100
-    static let chunkSize = 88_200
-    static let overlap = 8_820
-    static let step = chunkSize - overlap
 
-    static func run(input: URL, output: URL, model: URL, control: SeparationControl,
+    static func run(input: URL, output: URL, model: URL, mode: SeparationMode, control: SeparationControl,
                     decodeProgress: () -> Void, progress: (Double) -> Void) throws {
         let reader = try AudioReader(url: input)
         let settings: [String: Any] = [
@@ -60,14 +86,23 @@ struct SeparationEngine {
         try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
                                               ofItemAtPath: output.path)
         decodeProgress()
-        let fft = try Spectrogram()
-        let threads = Int32(min(4, max(1, ProcessInfo.processInfo.activeProcessorCount)))
-        var error = [CChar](repeating: 0, count: 1024)
-        let errorCapacity = error.count
-        guard let session = music_ort_open(model.path, threads, &error, errorCapacity) else {
-            throw SeparationError.inference(String(cString: error))
+        let fft: Spectrogram
+        let predict: (inout [Float]) throws -> [Float]
+        let overlap: Int
+        switch mode {
+        case .fast:
+            fft = try Spectrogram(size: 6_144, hop: 1_024, frames: 256, includeNyquist: false)
+            let separator = try MDXSeparator(url: model)
+            predict = { try separator.instrumental($0) }
+            overlap = 24_576
+        case .quality:
+            fft = try Spectrogram(size: 2_048, hop: 441, frames: 201, includeNyquist: true)
+            let separator = try RoFormerSeparator(url: model)
+            predict = { try separator.vocals(&$0, planeSize: fft.bins * fft.frames) }
+            overlap = 8_820
         }
-        defer { music_ort_close(session) }
+        let chunkSize = fft.sampleCount
+        let step = chunkSize - overlap
 
         var window = [Array(repeating: Float.zero, count: chunkSize), Array(repeating: Float.zero, count: chunkSize)]
         var pending = [Array(repeating: Float.zero, count: overlap), Array(repeating: Float.zero, count: overlap)]
@@ -96,17 +131,9 @@ struct SeparationEngine {
             try autoreleasepool {
                 var mix = fft.analyze(window)
                 try control.check()
-                var mask = Array(repeating: Float.zero, count: mix.count)
-                let ran = mix.withUnsafeMutableBufferPointer { input in
-                    mask.withUnsafeMutableBufferPointer { output in
-                        music_ort_run(session, input.baseAddress!, output.baseAddress!, &error, errorCapacity)
-                    }
-                }
-                guard ran else { throw SeparationError.inference(String(cString: error)) }
+                let stem = try predict(&mix)
                 try control.check()
-                var instrumental = try mask.withUnsafeBufferPointer { ptr in
-                    try fft.accompaniment(window, mix: mix, mask: ptr.baseAddress!)
-                }
+                var instrumental = try fft.reconstruct(window, stem: stem, subtract: mode == .quality)
                 if !first {
                     for c in 0..<2 {
                         for i in 0..<min(count, overlap) {
@@ -215,104 +242,214 @@ private final class AudioReader {
     }
 }
 
-private final class Spectrogram {
-    private let n = 2_048
-    private let half = 1_024
-    private let bins = 1_025
-    private let frames = SeparationEngine.chunkSize / 441 + 1
-    private let hop = 441
-    private let setup: FFTSetup
-    private let hann: [Float]
+private final class RoFormerSeparator {
+    private let session: OpaquePointer
 
-    init() throws {
-        guard let setup = vDSP_create_fftsetup(11, FFTRadix(kFFTRadix2)) else { throw SeparationError.fft }
-        self.setup = setup
-        self.hann = (0..<2_048).map { i in 0.5 - 0.5 * cos(2 * Float.pi * Float(i) / 2_048) }
+    init(url: URL) throws {
+        let threads = Int32(min(4, max(1, ProcessInfo.processInfo.activeProcessorCount)))
+        var error = [CChar](repeating: 0, count: 1_024)
+        let capacity = error.count
+        guard let session = music_ort_open(url.path, threads, &error, capacity) else {
+            throw SeparationError.inference(String(cString: error))
+        }
+        self.session = session
     }
 
-    deinit { vDSP_destroy_fftsetup(setup) }
+    deinit { music_ort_close(session) }
+
+    func vocals(_ mix: inout [Float], planeSize: Int) throws -> [Float] {
+        var mask = Array(repeating: Float.zero, count: mix.count)
+        var error = [CChar](repeating: 0, count: 1_024)
+        let capacity = error.count
+        let ran = mix.withUnsafeMutableBufferPointer { input in
+            mask.withUnsafeMutableBufferPointer { output in
+                music_ort_run(session, input.baseAddress!, output.baseAddress!, &error, capacity)
+            }
+        }
+        guard ran else { throw SeparationError.inference(String(cString: error)) }
+
+        let dcFrames = 201
+        for channel in 0..<2 {
+            let real = 2 * channel * planeSize
+            let imag = real + planeSize
+            for i in 0..<planeSize {
+                let mr = mask[real + i]
+                let mi = mask[imag + i]
+                mask[real + i] = i < dcFrames ? 0 : mix[real + i] * mr - mix[imag + i] * mi
+                mask[imag + i] = i < dcFrames ? 0 : mix[real + i] * mi + mix[imag + i] * mr
+            }
+        }
+        return mask
+    }
+}
+
+private final class MDXSeparator {
+    private let model: MLModel
+    private let input: MLMultiArray
+    private let features: MLDictionaryFeatureProvider
+    private static let shape = [1, 4, 3_072, 256]
+    private static let contiguous = [3_145_728, 786_432, 256, 1]
+
+    init(url: URL) throws {
+        let configuration = MLModelConfiguration()
+        configuration.computeUnits = .cpuAndGPU
+        model = try MLModel(contentsOf: url, configuration: configuration)
+        input = try MLMultiArray(shape: Self.shape.map { NSNumber(value: $0) }, dataType: .float16)
+        features = try MLDictionaryFeatureProvider(dictionary: ["input": MLFeatureValue(multiArray: input)])
+    }
+
+    func instrumental(_ mix: [Float]) throws -> [Float] {
+        guard mix.count == input.count, input.strides.map(\.intValue) == Self.contiguous
+        else { throw SeparationError.modelOutput }
+        let destination = input.dataPointer.assumingMemoryBound(to: Float16.self)
+        for i in mix.indices { destination[i] = Float16(mix[i]) }
+        let prediction = try model.prediction(from: features)
+        guard let output = prediction.featureValue(for: "output")?.multiArrayValue,
+              output.dataType == .float16,
+              output.shape.map(\.intValue) == Self.shape
+        else { throw SeparationError.modelOutput }
+        let strides = output.strides.map(\.intValue)
+        let source = output.dataPointer.assumingMemoryBound(to: Float16.self)
+        return withExtendedLifetime(output) {
+            if strides == Self.contiguous {
+                return (0..<output.count).map { Float(source[$0]) }
+            }
+            var values = Array(repeating: Float.zero, count: output.count)
+            for plane in 0..<4 {
+                for bin in 0..<3_072 {
+                    let start = (plane * 3_072 + bin) * 256
+                    let offset = plane * strides[1] + bin * strides[2]
+                    for frame in 0..<256 {
+                        values[start + frame] = Float(source[offset + frame * strides[3]])
+                    }
+                }
+            }
+            return values
+        }
+    }
+}
+
+private final class Spectrogram {
+    let bins: Int
+    let frames: Int
+    let sampleCount: Int
+    private let n: Int
+    private let half: Int
+    private let hop: Int
+    private let forward: vDSP_DFT_Setup
+    private let inverse: vDSP_DFT_Setup
+    private let hann: [Float]
+    private let synthesisScale: [Float]
+
+    init(size: Int, hop: Int, frames: Int, includeNyquist: Bool) throws {
+        let length = vDSP_Length(size)
+        guard let forward = vDSP_DFT_zop_CreateSetup(nil, length, .FORWARD) else { throw SeparationError.fft }
+        guard let inverse = vDSP_DFT_zop_CreateSetup(nil, length, .INVERSE) else {
+            vDSP_DFT_DestroySetup(forward)
+            throw SeparationError.fft
+        }
+        let hann = (0..<size).map { i in 0.5 - 0.5 * cos(2 * Float.pi * Float(i) / Float(size)) }
+        let count = (frames - 1) * hop
+        let half = size / 2
+        var norm = Array(repeating: Float.zero, count: count)
+        for frame in 0..<frames {
+            let start = frame * hop - half
+            for i in max(0, -start)..<min(size, count - start) {
+                norm[start + i] += hann[i] * hann[i]
+            }
+        }
+        self.forward = forward
+        self.inverse = inverse
+        self.hann = hann
+        self.synthesisScale = norm.map { 1 / (Float(size) * max($0, 0.000001)) }
+        self.n = size
+        self.half = half
+        self.bins = half + (includeNyquist ? 1 : 0)
+        self.frames = frames
+        self.hop = hop
+        self.sampleCount = count
+    }
+
+    deinit {
+        vDSP_DFT_DestroySetup(inverse)
+        vDSP_DFT_DestroySetup(forward)
+    }
 
     func analyze(_ audio: [[Float]]) -> [Float] {
         var spec = Array(repeating: Float.zero, count: 4 * bins * frames)
         var re = Array(repeating: Float.zero, count: n)
         var im = re
-        for c in 0..<2 {
-            let realBase = (2 * c) * bins * frames
+        var realSpectrum = re
+        var imagSpectrum = re
+        for channel in 0..<2 {
+            let realBase = (2 * channel) * bins * frames
             let imagBase = realBase + bins * frames
+            let samples = audio[channel]
             for frame in 0..<frames {
                 let start = frame * hop - half
-                for i in 0..<n {
-                    let index = start + i
-                    re[i] = audio[c][reflected(index, length: SeparationEngine.chunkSize)] * hann[i]
-                    im[i] = 0
+                if start >= 0 && start + n <= sampleCount {
+                    samples.withUnsafeBufferPointer { samples in
+                        hann.withUnsafeBufferPointer { window in
+                            vDSP_vmul(samples.baseAddress! + start, 1, window.baseAddress!, 1, &re, 1, vDSP_Length(n))
+                        }
+                    }
+                } else {
+                    for i in 0..<n {
+                        re[i] = samples[reflected(start + i, length: sampleCount)] * hann[i]
+                    }
                 }
-                transform(re: &re, im: &im, direction: FFTDirection(FFT_FORWARD))
-                for b in 0..<bins {
-                    let index = b * frames + frame
-                    spec[realBase + index] = re[b]
-                    spec[imagBase + index] = im[b]
+                vDSP_vclr(&im, 1, vDSP_Length(n))
+                vDSP_DFT_Execute(forward, re, im, &realSpectrum, &imagSpectrum)
+                for bin in 0..<bins {
+                    let index = bin * frames + frame
+                    spec[realBase + index] = realSpectrum[bin]
+                    spec[imagBase + index] = imagSpectrum[bin]
                 }
             }
         }
         return spec
     }
 
-    func accompaniment(_ audio: [[Float]], mix: [Float], mask: UnsafePointer<Float>) throws -> [[Float]] {
-        let count = SeparationEngine.chunkSize
+    func reconstruct(_ audio: [[Float]], stem: [Float], subtract: Bool) throws -> [[Float]] {
         var audioOut = audio
-        var norm = Array(repeating: Float.zero, count: count)
-        for frame in 0..<frames {
-            let start = frame * hop - half
-            for i in max(0, -start)..<min(n, count - start) {
-                norm[start + i] += hann[i] * hann[i]
-            }
-        }
-
         var re = Array(repeating: Float.zero, count: n)
         var im = re
-        for c in 0..<2 {
-            let realBase = (2 * c) * bins * frames
+        var signal = re
+        var imaginarySignal = re
+        for channel in 0..<2 {
+            let realBase = (2 * channel) * bins * frames
             let imagBase = realBase + bins * frames
-            var vocal = Array(repeating: Float.zero, count: count)
+            var reconstructed = Array(repeating: Float.zero, count: sampleCount)
             for frame in 0..<frames {
-                re[0] = 0
+                re[0] = stem[realBase + frame]
                 im[0] = 0
-                for b in 1..<bins {
-                    let index = b * frames + frame
-                    let r = mix[realBase + index]
-                    let j = mix[imagBase + index]
-                    let mr = mask[realBase + index]
-                    let mj = mask[imagBase + index]
-                    let real = r * mr - j * mj
-                    let imag = r * mj + j * mr
-                    re[b] = real
-                    im[b] = b == half ? 0 : imag
-                    if b < half {
-                        re[n - b] = real
-                        im[n - b] = -imag
+                re[half] = 0
+                im[half] = 0
+                for bin in 1..<bins {
+                    let index = bin * frames + frame
+                    let real = stem[realBase + index]
+                    let imag = stem[imagBase + index]
+                    re[bin] = real
+                    if bin < half {
+                        im[bin] = imag
+                        re[n - bin] = real
+                        im[n - bin] = -imag
                     }
                 }
-                transform(re: &re, im: &im, direction: FFTDirection(FFT_INVERSE))
+                vDSP_DFT_Execute(inverse, re, im, &signal, &imaginarySignal)
                 let start = frame * hop - half
-                for i in max(0, -start)..<min(n, count - start) {
-                    vocal[start + i] += re[i] * hann[i] / Float(n)
+                for i in max(0, -start)..<min(n, sampleCount - start) {
+                    reconstructed[start + i] += signal[i] * hann[i]
                 }
             }
-            for i in 0..<count {
-                let result = audio[c][i] - vocal[i] / max(norm[i], 0.000001)
+            for i in 0..<sampleCount {
+                let sample = reconstructed[i] * synthesisScale[i]
+                let result = subtract ? audio[channel][i] - sample : sample
                 guard result.isFinite else { throw SeparationError.modelOutput }
-                audioOut[c][i] = result
+                audioOut[channel][i] = result
             }
         }
         return audioOut
     }
 
-    private func transform(re: inout [Float], im: inout [Float], direction: FFTDirection) {
-        re.withUnsafeMutableBufferPointer { real in
-            im.withUnsafeMutableBufferPointer { imaginary in
-                var split = DSPSplitComplex(realp: real.baseAddress!, imagp: imaginary.baseAddress!)
-                vDSP_fft_zip(setup, &split, 1, 11, direction)
-            }
-        }
-    }
 }

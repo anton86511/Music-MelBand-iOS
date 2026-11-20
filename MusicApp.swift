@@ -19,6 +19,7 @@ struct MusicApp: App {
 private struct StudioView: View {
     @ObservedObject var studio: Studio
     @State private var pickingAudio = false
+    @State private var mode: SeparationMode = .fast
 
     var body: some View {
         NavigationStack {
@@ -30,7 +31,7 @@ private struct StudioView: View {
                             .foregroundStyle(.mint)
                             .accessibilityHidden(true)
                         Text("去人聲").font(.system(.largeTitle, design: .rounded).weight(.bold))
-                        Text("Mel-Band RoFormer · iPhone 本機分離").foregroundStyle(.secondary)
+                        Text("iPhone 本機分離").foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(24)
@@ -41,6 +42,20 @@ private struct StudioView: View {
                         in: RoundedRectangle(cornerRadius: 24)
                     )
 
+                    VStack(alignment: .leading, spacing: 8) {
+                        Picker("分離模式", selection: $mode) {
+                            ForEach(SeparationMode.allCases) { mode in
+                                Text(mode.title).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .disabled(studio.busy)
+                        Text(mode.modelName).font(.caption).foregroundStyle(.secondary)
+                        if mode == .fast {
+                            Text("建議保持畫面開啟以使用 GPU。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                     if let name = studio.fileName {
                         Label(name, systemImage: "music.note").font(.headline)
                     }
@@ -86,7 +101,7 @@ private struct StudioView: View {
             .navigationTitle("音樂")
             .fileImporter(isPresented: $pickingAudio, allowedContentTypes: [.item]) { selection in
                 switch selection {
-                case .success(let url): studio.separate(url)
+                case .success(let url): studio.separate(url, mode: mode)
                 case .failure(let error): studio.error = error.localizedDescription
                 }
             }
