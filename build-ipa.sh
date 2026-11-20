@@ -71,6 +71,7 @@ if [[ "${CI:-}" == true ]]; then
   xcrun --sdk macosx swiftc -O -parse-as-library LeapXeInstaller.swift LeapXeInstallCheck.swift \
     -o Build/LeapXeInstallCheck
   Build/LeapXeInstallCheck Build/LeapXe-author.ckpt Build/LeapXeResources/LeapXeTemplate Build/LeapXeValidation.mlpackage
+  # Verify the synthesized vocal waveform produced by the installed model.
   Build/HQ4Python/bin/python validate-leapxe.py Build/LeapXeValidation.mlpackage LeapXe-reference.json
 fi
 xcodegen generate
