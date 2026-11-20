@@ -1,5 +1,4 @@
 import AVFoundation
-import BackgroundTasks
 import SwiftUI
 import UIKit
 
@@ -9,12 +8,7 @@ final class Studio: ObservableObject {
     @Published private(set) var status = ""
     @Published private(set) var progress: Double?
     @Published private(set) var busy = false
-    @Published private(set) var installedLeapXe = Set(
-        LeapXeInstaller.Variant.allCases.filter { LeapXeInstaller.modelURL(for: $0) != nil }
-    )
     @Published private(set) var separating = false
-    @Published private(set) var canPlaySource = false
-    @Published private(set) var playingSource = false
     @Published private(set) var playing = false
     @Published private(set) var result: URL?
     @Published var error: String?
@@ -22,27 +16,7 @@ final class Studio: ObservableObject {
     nonisolated private static let folder = URL.applicationSupportDirectory.appendingPathComponent("MusicStudio", isDirectory: true)
     private var control: SeparationControl?
     private var player: AVAudioPlayer?
-    private var sourcePlayer: AVAudioPlayer?
-    private var sourceURL: URL?
     private var playbackMonitor: Task<Void, Never>?
-
-    func installLeapXe(_ variant: LeapXeInstaller.Variant) {
-        guard !busy, !installedLeapXe.contains(variant) else { return }
-        busy = true
-        error = nil
-        status = "正在下載與安裝 Leap Xe，請保持 App 開啟。"
-        Task {
-            defer { busy = false }
-            do {
-                try await LeapXeInstaller.install(variant)
-                installedLeapXe.insert(variant)
-                status = "Leap Xe 已安裝，可以離線去人聲。"
-            } catch {
-                status = ""
-                self.error = error.localizedDescription
-            }
-        }
-    }
 
     func separate(_ input: URL, mode: SeparationMode) {
         guard !busy else { return }
@@ -72,102 +46,69 @@ final class Studio: ObservableObject {
         let output = Self.folder.appendingPathComponent("\(name)-伴奏.wav")
         let partial = Self.folder.appendingPathComponent("output-\(identifier).wav")
 
-        let start: (Bool, @escaping (Double) -> Void, @escaping (Bool) -> Void) -> Void = {
-            [weak self] continued, report, completion in
-            Task { @MainActor in
-                var success = false
-                defer {
-                    completion(success)
-                    try? FileManager.default.removeItem(at: jobFolder)
-                    try? FileManager.default.removeItem(at: partial)
-                    if granted { input.stopAccessingSecurityScopedResource() }
-                }
-                guard let self else { return }
-                defer {
-                    self.stopSourcePlayback()
-                    self.sourceURL = nil
-                    self.canPlaySource = false
-                    self.busy = false
-                    self.separating = false
-                    self.progress = nil
-                    self.control = nil
-                }
-                do {
-                    try await Task.detached(priority: .userInitiated) {
-                        try FileManager.default.createDirectory(at: staged.deletingLastPathComponent(), withIntermediateDirectories: true)
-                        try Self.copyInput(input, to: staged)
-                        let prepared = try await AudioImport.prepare(staged, control: job)
-                        try SeparationEngine.run(input: prepared, output: partial, model: model, mode: mode, control: job) {
-                            Task { @MainActor [weak self] in
-                                guard let self, self.control === job else { return }
-                                self.sourceURL = prepared
-                                self.canPlaySource = mode == .quality && !continued
-                                if mode.usesCoreML {
-                                    self.status = "正在分離，請保持畫面開啟。"
-                                } else {
-                                    self.status = continued ? "正在分離，可嘗試鎖屏。" : "正在分離。若要鎖屏，可先播放原曲。"
-                                }
-                            }
-                        } cooling: { paused in
-                            Task { @MainActor [weak self] in
-                                guard let self, self.control === job, (try? job.check()) != nil else { return }
-                                self.status = paused
-                                    ? "iPhone 溫度偏高，已暫停分離。降溫後會自動繼續。"
-                                    : "正在分離，請保持畫面開啟。"
-                            }
-                        } progress: { fraction in
-                            Task { @MainActor [weak self] in
-                                guard let self, self.control === job else { return }
-                                self.progress = fraction
-                                report(fraction)
-                            }
-                        }
-                        try job.check()
-                    }.value
-                    if FileManager.default.fileExists(atPath: output.path) {
-                        try FileManager.default.removeItem(at: output)
-                    }
-                    try FileManager.default.moveItem(at: partial, to: output)
-                    self.result = output
-                    let elapsed = started.duration(to: .now).components
-                    let seconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
-                    self.status = "分離完成 · 耗時 \(seconds.formatted(.number.precision(.fractionLength(1)))) 秒"
-                    success = true
-                } catch is CancellationError {
-                    self.status = "分離已中止。可重新選取音檔。"
-                } catch {
-                    self.status = ""
-                    self.error = error.localizedDescription
-                }
-            }
-        }
-
-        if mode == .quality, #available(iOS 26.0, *),
-           BackgroundSeparation.shared.submit({ task in
-               task.progress.totalUnitCount = 1_000
-               task.expirationHandler = { job.cancel() }
-               start(true, { fraction in
-                   task.progress.completedUnitCount = Int64(fraction * 1_000)
-               }, { success in
-                   if success { task.progress.completedUnitCount = 1_000 }
-                   task.setTaskCompleted(success: success)
-               })
-           }) { return }
-
-        // Provides the short grace period iOS allows when a full continued task is unavailable.
+        // Keep the short background grace period for interruptions such as switching apps.
         var token = UIBackgroundTaskIdentifier.invalid
-        token = UIApplication.shared.beginBackgroundTask(withName: "Mel-Band RoFormer") {
+        func endBackgroundTask() {
             if token != .invalid {
                 UIApplication.shared.endBackgroundTask(token)
                 token = .invalid
             }
         }
-        start(false, { _ in }, { _ in
-            if token != .invalid {
-                UIApplication.shared.endBackgroundTask(token)
-                token = .invalid
+        token = UIApplication.shared.beginBackgroundTask(withName: mode.title) {
+            endBackgroundTask()
+        }
+
+        Task { @MainActor in
+            defer {
+                endBackgroundTask()
+                try? FileManager.default.removeItem(at: jobFolder)
+                try? FileManager.default.removeItem(at: partial)
+                if granted { input.stopAccessingSecurityScopedResource() }
+                self.busy = false
+                self.separating = false
+                self.progress = nil
+                self.control = nil
             }
-        })
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try FileManager.default.createDirectory(at: staged.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try Self.copyInput(input, to: staged)
+                    let prepared = try await AudioImport.prepare(staged, control: job)
+                    try SeparationEngine.run(input: prepared, output: partial, model: model, mode: mode, control: job) {
+                        Task { @MainActor [weak self] in
+                            guard let self, self.control === job, (try? job.check()) != nil else { return }
+                            self.status = "正在分離，請保持 App 在前景。"
+                        }
+                    } cooling: { paused in
+                        Task { @MainActor [weak self] in
+                            guard let self, self.control === job, (try? job.check()) != nil else { return }
+                            self.status = paused
+                                ? "iPhone 溫度偏高，已暫停分離。降溫後會自動繼續。"
+                                : "正在分離，請保持 App 在前景。"
+                        }
+                    } progress: { fraction in
+                        Task { @MainActor [weak self] in
+                            guard let self, self.control === job else { return }
+                            self.progress = fraction
+                        }
+                    }
+                    try job.check()
+                }.value
+                if FileManager.default.fileExists(atPath: output.path) {
+                    try FileManager.default.removeItem(at: output)
+                }
+                try FileManager.default.moveItem(at: partial, to: output)
+                self.result = output
+                let elapsed = started.duration(to: .now).components
+                let seconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
+                self.status = "分離完成 · 耗時 \(seconds.formatted(.number.precision(.fractionLength(1)))) 秒"
+            } catch is CancellationError {
+                self.status = "分離已中止。可重新選取音檔。"
+            } catch {
+                self.status = ""
+                self.error = error.localizedDescription
+            }
+        }
     }
 
     nonisolated private static func copyInput(_ input: URL, to output: URL) throws {
@@ -192,37 +133,6 @@ final class Studio: ObservableObject {
     func cancel() {
         control?.cancel()
         status = "正在停止分離…"
-    }
-
-    func toggleSourcePlayback() {
-        if playingSource {
-            stopSourcePlayback()
-            status = "正在分離。若要鎖屏，可先播放原曲。"
-            return
-        }
-        guard separating, let sourceURL else { return }
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback)
-            try session.setActive(true)
-            let audio = try AVAudioPlayer(contentsOf: sourceURL)
-            audio.numberOfLoops = -1
-            guard audio.play() else { throw SeparationError.empty }
-            sourcePlayer = audio
-            playingSource = true
-            status = "原曲在播放，可嘗試鎖屏。完成後會自動停止。"
-        } catch {
-            self.error = "無法背景播放這個原曲。請保持 App 開啟。"
-        }
-    }
-
-    private func stopSourcePlayback() {
-        if sourcePlayer != nil {
-            sourcePlayer?.stop()
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        }
-        sourcePlayer = nil
-        playingSource = false
     }
 
     func togglePlayback() {

@@ -1,11 +1,8 @@
-import BackgroundTasks
 import SwiftUI
-import UIKit
 import UniformTypeIdentifiers
 
 @main
 struct MusicApp: App {
-    @UIApplicationDelegateAdaptor(MusicDelegate.self) private var delegate
     @StateObject private var studio = Studio()
 
     var body: some Scene {
@@ -19,7 +16,7 @@ struct MusicApp: App {
 private struct StudioView: View {
     @ObservedObject var studio: Studio
     @State private var pickingAudio = false
-    @State private var mode: SeparationMode = .fast
+    @State private var mode: SeparationMode = .hq3
 
     var body: some View {
         NavigationStack {
@@ -44,20 +41,15 @@ private struct StudioView: View {
 
                     VStack(alignment: .leading, spacing: 8) {
                         Picker("分離模型", selection: $mode) {
-                            ForEach(SeparationMode.available) { mode in
+                            ForEach(SeparationMode.allCases) { mode in
                                 Text(mode.title).tag(mode)
                             }
                         }
                         .pickerStyle(.menu)
                         .disabled(studio.busy)
-                        Text(mode.backend).font(.caption).foregroundStyle(.secondary)
-                        if mode == .leapXeFast {
-                            Text("使用原始 Leap Xe 模型與混合精度推論。建議保持畫面開啟。")
-                                .font(.caption).foregroundStyle(.secondary)
-                        } else if mode.usesCoreML {
-                            Text("建議保持畫面開啟以使用 GPU。")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
+                        Text("Core ML · GPU 加速").font(.caption).foregroundStyle(.secondary)
+                        Text("分離期間請保持 App 在前景。")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     if let name = studio.fileName {
                         Label(name, systemImage: "music.note").font(.headline)
@@ -87,19 +79,7 @@ private struct StudioView: View {
                     }
 
                     if !studio.busy {
-                        if let variant = mode.leapXeVariant, !studio.installedLeapXe.contains(variant) {
-                            prominent("下載 Leap Xe（約 268 MB）", systemImage: "arrow.down.circle") {
-                                studio.installLeapXe(variant)
-                            }
-                        } else {
-                            prominent("選擇音樂檔案", systemImage: "plus") { pickingAudio = true }
-                        }
-                    }
-                    if studio.canPlaySource {
-                        Button(action: studio.toggleSourcePlayback) {
-                            Label(studio.playingSource ? "停止播放原曲" : "播放原曲並鎖屏",
-                                  systemImage: studio.playingSource ? "pause.circle" : "lock")
-                        }
+                        prominent("選擇音樂檔案", systemImage: "plus") { pickingAudio = true }
                     }
                     if studio.separating {
                         Button("取消分離", role: .destructive, action: studio.cancel)
@@ -128,59 +108,5 @@ private struct StudioView: View {
         .buttonStyle(.borderedProminent)
         .tint(.mint)
         .foregroundStyle(.black)
-    }
-}
-
-final class MusicDelegate: NSObject, UIApplicationDelegate {
-    func application(_ application: UIApplication,
-                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
-        if #available(iOS 26.0, *) {
-            BackgroundSeparation.shared.register()
-        }
-        return true
-    }
-}
-
-@available(iOS 26.0, *)
-@MainActor
-final class BackgroundSeparation {
-    static let shared = BackgroundSeparation()
-    private static let prefix = "tw.anton86511.melband.music.separation"
-
-    private var registered = false
-    private var pending: ((BGContinuedProcessingTask) -> Void)?
-
-    func register() {
-        guard Bundle.main.bundleIdentifier == "tw.anton86511.melband.music" else { return }
-        registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.prefix + ".*", using: .main) { [weak self] task in
-            guard let task = task as? BGContinuedProcessingTask else {
-                task.setTaskCompleted(success: false)
-                return
-            }
-            Task { @MainActor in
-                guard let self, let launch = self.pending else {
-                    task.setTaskCompleted(success: false)
-                    return
-                }
-                self.pending = nil
-                launch(task)
-            }
-        }
-    }
-
-    func submit(_ start: @escaping (BGContinuedProcessingTask) -> Void) -> Bool {
-        guard registered, pending == nil else { return false }
-        let request = BGContinuedProcessingTaskRequest(
-            identifier: Self.prefix + "." + UUID().uuidString,
-            title: "音樂 · 去人聲", subtitle: "正在 iPhone 上分離伴奏")
-        request.strategy = .fail
-        pending = start
-        do {
-            try BGTaskScheduler.shared.submit(request)
-            return true
-        } catch {
-            pending = nil
-            return false
-        }
     }
 }

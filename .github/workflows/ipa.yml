@@ -4,10 +4,9 @@ on:
     branches: [main]
     paths:
       - "*.swift"
-      - "ORTBridge.*"
       - "project.yml"
       - "build-ipa.sh"
-      - "prepare-model.py"
+      - "prepare-mdx.py"
       - ".github/workflows/ipa.yml"
   workflow_dispatch:
 
@@ -39,5 +38,5 @@ jobs:
           if gh release view "$release" >/dev/null 2>&1; then
             gh release upload "$release" dist/* --clobber
           else
-            gh release create "$release" dist/* --target "$GITHUB_SHA" --title "音樂 IPA · ${GITHUB_RUN_NUMBER}" --notes "LiveContainer 匯入版。內建 Mel-Band RoFormer 模型，安裝後可直接離線去人聲。"
+            gh release create "$release" dist/* --target "$GITHUB_SHA" --title "音樂 IPA · ${GITHUB_RUN_NUMBER}" --notes "LiveContainer 匯入版。內建 UVR Inst HQ 4、UVR Inst HQ 3 及 UVR-MDX-NET-Inst_Main，使用 Core ML GPU 加速，安裝後可直接離線去人聲。"
           fi
