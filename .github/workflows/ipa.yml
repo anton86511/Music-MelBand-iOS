@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths:
       - "*.swift"
+      - "Assets.xcassets/**"
       - "project.yml"
       - "build-ipa.sh"
       - "prepare-mdx.py"
@@ -38,5 +39,5 @@ jobs:
           if gh release view "$release" >/dev/null 2>&1; then
             gh release upload "$release" dist/* --clobber
           else
-            gh release create "$release" dist/* --target "$GITHUB_SHA" --title "音樂 IPA · ${GITHUB_RUN_NUMBER}" --notes "LiveContainer 匯入版。內建 UVR Inst HQ 4、UVR Inst HQ 3 及 UVR-MDX-NET-Inst_Main，使用 Core ML GPU 加速，安裝後可直接離線去人聲。"
+            gh release create "$release" dist/* --target "$GITHUB_SHA" --title "音樂 IPA · ${GITHUB_RUN_NUMBER}" --notes "LiveContainer 匯入版。內建 UVR Inst HQ 4、UVR Inst HQ 3、UVR-MDX-NET-Inst_Main 與 MDX23C InstVoc HQ，使用 Core ML GPU 加速，可離線去人聲。MDX23C 需 iOS 17 以上。本版新增青綠聲波 App 圖示。"
           fi

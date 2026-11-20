@@ -58,7 +58,16 @@ convert_mdx() {
 convert_mdx InstHQ4 2560
 convert_mdx InstMain 2048
 
-models=(InstHQ4 InstHQ3 InstMain)
+mdx23c_source="https://huggingface.co/huggingsounds/nubeaudio-mdx/resolve/a133c157760773700ecbdaadcba755d7e94739c3"
+fetch_checked "$mdx23c_source/mdx23c_instvoc_hq.mlpackage.zip" Build/MDX23CInstVocHQ.zip \
+  c1d4c475f1d43b64f9e48b8b8e5defe6f41ead6289d1feb9da6480c25246c674
+mdx23c_staging="$(mktemp -d Build/MDX23C.XXXXXX)"
+trap 'rm -rf "$mdx23c_staging"' EXIT
+unzip -q Build/MDX23CInstVocHQ.zip -d "$mdx23c_staging"
+rm -rf Build/MDX23CInstVocHQ.mlpackage
+mv "$mdx23c_staging/mdx23c_instvoc_hq.mlpackage" Build/MDX23CInstVocHQ.mlpackage
+
+models=(InstHQ4 InstHQ3 InstMain MDX23CInstVocHQ)
 for model in "${models[@]}"; do
   rm -rf "Build/CoreML/$model.mlmodelc"
   xcrun --sdk iphoneos coremlcompiler compile "Build/$model.mlpackage" Build/CoreML
@@ -83,4 +92,7 @@ for model in "${models[@]}"; do
   grep -F "Payload/Music.app/$model.mlmodelc/" <<<"$ipa_entries" >/dev/null
 done
 /usr/libexec/PlistBuddy -c 'Print CFBundleDisplayName' Build/Package/Payload/Music.app/Info.plist | grep -Fx '音樂'
+/usr/libexec/PlistBuddy -c 'Print CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName' \
+  Build/Package/Payload/Music.app/Info.plist | grep -Fx 'AppIcon'
+grep -Fx 'Payload/Music.app/Assets.car' <<<"$ipa_entries" >/dev/null
 shasum -a 256 dist/Music-unsigned.ipa | sed 's|dist/||' > dist/Music-unsigned.ipa.sha256
