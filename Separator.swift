@@ -182,7 +182,7 @@ private func reflected(_ index: Int, length: Int) -> Int {
     return min(wrapped, period - wrapped)
 }
 
-private final class AudioReader {
+final class AudioReader {
     private let file: ExtAudioFileRef
     private let buffer: AVAudioPCMBuffer
     let estimatedFrames: Double
@@ -220,6 +220,11 @@ private final class AudioReader {
     }
 
     deinit { ExtAudioFileDispose(file) }
+
+    func hasAudio() throws -> Bool {
+        var samples = [[Float.zero], [Float.zero]]
+        return try read(into: &samples, offset: 0, maxFrames: 1) == 1
+    }
 
     func read(into planes: inout [[Float]], offset: Int, maxFrames: Int) throws -> Int {
         guard let channels = buffer.floatChannelData else { throw SeparationError.empty }

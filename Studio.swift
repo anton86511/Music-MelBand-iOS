@@ -45,7 +45,8 @@ final class Studio: ObservableObject {
         let granted = input.startAccessingSecurityScopedResource()
         let identifier = UUID().uuidString
         let suffix = input.pathExtension
-        let staged = Self.folder.appendingPathComponent(suffix.isEmpty ? "input-\(identifier)" : "input-\(identifier).\(suffix)")
+        let jobFolder = Self.folder.appendingPathComponent("Import-\(identifier)", isDirectory: true)
+        let staged = jobFolder.appendingPathComponent(suffix.isEmpty ? "input" : "input.\(suffix)")
         let name = String(input.deletingPathExtension().lastPathComponent.prefix(100))
         let output = Self.folder.appendingPathComponent("\(name)-伴奏.wav")
         let partial = Self.folder.appendingPathComponent("output-\(identifier).wav")
@@ -56,7 +57,7 @@ final class Studio: ObservableObject {
                 var success = false
                 defer {
                     completion(success)
-                    try? FileManager.default.removeItem(at: staged)
+                    try? FileManager.default.removeItem(at: jobFolder)
                     try? FileManager.default.removeItem(at: partial)
                     if granted { input.stopAccessingSecurityScopedResource() }
                 }
@@ -74,11 +75,11 @@ final class Studio: ObservableObject {
                     try await Task.detached(priority: .userInitiated) {
                         try FileManager.default.createDirectory(at: staged.deletingLastPathComponent(), withIntermediateDirectories: true)
                         try Self.copyInput(input, to: staged)
-                        try job.check()
-                        try SeparationEngine.run(input: staged, output: partial, model: model, mode: mode, control: job) {
+                        let prepared = try await AudioImport.prepare(staged, control: job)
+                        try SeparationEngine.run(input: prepared, output: partial, model: model, mode: mode, control: job) {
                             Task { @MainActor [weak self] in
                                 guard let self, self.control === job else { return }
-                                self.sourceURL = staged
+                                self.sourceURL = prepared
                                 self.canPlaySource = mode == .quality && !continued
                                 if mode == .fast {
                                     self.status = "正在分離，請保持畫面開啟。"
