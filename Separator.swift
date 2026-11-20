@@ -66,14 +66,21 @@ enum SeparationMode: String, CaseIterable, Identifiable, Sendable {
     case hq4
     case hq3
     case instMain
+    case mdx23c
 
     var id: Self { self }
+
+    static var availableModes: [Self] {
+        if #available(iOS 17, *) { return allCases }
+        return allCases.filter { $0 != .mdx23c }
+    }
 
     var title: String {
         switch self {
         case .hq4: return "UVR Inst HQ 4"
         case .hq3: return "UVR Inst HQ 3"
         case .instMain: return "UVR-MDX-NET-Inst_Main"
+        case .mdx23c: return "MDX23C InstVoc HQ"
         }
     }
 
@@ -81,6 +88,7 @@ enum SeparationMode: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .hq4, .instMain: return 5_120
         case .hq3: return 6_144
+        case .mdx23c: return 8_192
         }
     }
 
@@ -98,6 +106,7 @@ enum SeparationMode: String, CaseIterable, Identifiable, Sendable {
         case .hq4: resource = "InstHQ4"
         case .hq3: resource = "InstHQ3"
         case .instMain: resource = "InstMain"
+        case .mdx23c: resource = "MDX23CInstVocHQ"
         }
         return bundle.url(forResource: resource, withExtension: "mlmodelc")
     }
@@ -125,7 +134,14 @@ struct SeparationEngine {
         try control.waitForCooling(report: cooling)
         let fft = try Spectrogram(size: mode.fftSize, bins: mode.frequencyBins, hop: 1_024,
                                   frames: 256, outputGain: mode.outputGain)
-        let separator = try SpectrogramCoreML(url: model, bins: fft.bins, frames: fft.frames)
+        let predict: ([Float]) throws -> [Float]
+        if mode == .mdx23c {
+            let separator = try MDX23CSeparator(url: model, bins: fft.bins, frames: fft.frames)
+            predict = separator.predict
+        } else {
+            let separator = try SpectrogramCoreML(url: model, bins: fft.bins, frames: fft.frames)
+            predict = separator.predict
+        }
         let overlap = 24_576
         let chunkSize = fft.sampleCount
         let step = chunkSize - overlap
@@ -158,7 +174,7 @@ struct SeparationEngine {
             try autoreleasepool {
                 let mix = fft.analyze(window)
                 try control.check()
-                let stem = try separator.predict(mix)
+                let stem = try predict(mix)
                 try control.check()
                 var instrumental = try fft.reconstruct(stem)
                 if !first {

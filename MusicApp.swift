@@ -41,7 +41,7 @@ private struct StudioView: View {
 
                     VStack(alignment: .leading, spacing: 8) {
                         Picker("分離模型", selection: $mode) {
-                            ForEach(SeparationMode.allCases) { mode in
+                            ForEach(SeparationMode.availableModes) { mode in
                                 Text(mode.title).tag(mode)
                             }
                         }
