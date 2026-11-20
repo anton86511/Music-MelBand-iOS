@@ -81,7 +81,7 @@ final class Studio: ObservableObject {
                                 guard let self, self.control === job else { return }
                                 self.sourceURL = prepared
                                 self.canPlaySource = mode == .quality && !continued
-                                if mode == .fast {
+                                if mode.usesCoreML {
                                     self.status = "正在分離，請保持畫面開啟。"
                                 } else {
                                     self.status = continued ? "正在分離，可嘗試鎖屏。" : "正在分離。若要鎖屏，可先播放原曲。"

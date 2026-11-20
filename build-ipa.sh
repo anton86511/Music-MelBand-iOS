@@ -40,6 +40,26 @@ fetch_checked "$mdx_source/LICENSE" Build/MDX-LICENSE.txt \
   cf21ae3c45c311a38171b1a1de097145824c6629f32c3429680de2607230b9fa
 xcrun --sdk iphoneos coremlcompiler compile "$mdx_package" Build/CoreML
 test -d Build/CoreML/InstHQ3.mlmodelc
+hq4_source="https://huggingface.co/Politrees/UVR_resources/resolve/8cc4418"
+fetch_checked "$hq4_source/models/MDXNet/UVR-MDX-NET-Inst_HQ_4.onnx" Build/InstHQ4.onnx \
+  3c4b5b9b05090fdf238f38ba5046813982d50e2a652e9cb3324ea79720c3c9c8
+if [[ ! -f Build/InstHQ4.mlpackage/Manifest.json ]]; then
+  hq4_python="${HQ4_PYTHON:-python3.12}"
+  if ! command -v "$hq4_python" >/dev/null && [[ -n "${RUNNER_TOOL_CACHE:-}" ]]; then
+    for cached_python in "$RUNNER_TOOL_CACHE"/Python/3.12.*/arm64/bin/python3.12; do
+      if [[ -x "$cached_python" ]]; then
+        hq4_python="$cached_python"
+        break
+      fi
+    done
+  fi
+  "$hq4_python" -m venv Build/HQ4Python
+  Build/HQ4Python/bin/python -m pip install 'torch==2.9.1' 'torchvision==0.24.1' \
+    'coremltools==9.0' 'onnx2torch==1.5.15' 'onnx==1.23.2' 'onnxruntime==1.24.2' 'numpy<2.3'
+  Build/HQ4Python/bin/python prepare-hq4.py Build/InstHQ4.onnx Build/InstHQ4.mlpackage
+fi
+xcrun --sdk iphoneos coremlcompiler compile Build/InstHQ4.mlpackage Build/CoreML
+test -d Build/CoreML/InstHQ4.mlmodelc
 xcodegen generate
 xcodebuild -project Music.xcodeproj -scheme Music -configuration Release \
   -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath Build/Derived \
@@ -47,11 +67,13 @@ xcodebuild -project Music.xcodeproj -scheme Music -configuration Release \
 mkdir -p Build/Package/Payload dist
 ditto Build/Derived/Build/Products/Release-iphoneos/Music.app Build/Package/Payload/Music.app
 ditto Build/CoreML/InstHQ3.mlmodelc Build/Package/Payload/Music.app/InstHQ3.mlmodelc
+ditto Build/CoreML/InstHQ4.mlmodelc Build/Package/Payload/Music.app/InstHQ4.mlmodelc
 cp Build/MDX-LICENSE.txt Build/Package/Payload/Music.app/
 rm -f dist/Music-unsigned.ipa
 (cd Build/Package && zip -qry ../../dist/Music-unsigned.ipa Payload)
 unzip -tq dist/Music-unsigned.ipa
 unzip -Z1 dist/Music-unsigned.ipa | grep -F 'Payload/Music.app/InstHQ3.mlmodelc/' >/dev/null
+unzip -Z1 dist/Music-unsigned.ipa | grep -F 'Payload/Music.app/InstHQ4.mlmodelc/' >/dev/null
 unzip -p dist/Music-unsigned.ipa Payload/Music.app/melband-phone.onnx | shasum -a 256 | grep -Fq fb25aa57aa8c90383ca6d74474abd759d7fc32f4d12642722b0944b8c65690a9
 /usr/libexec/PlistBuddy -c 'Print CFBundleDisplayName' Build/Package/Payload/Music.app/Info.plist | grep -Fx '音樂'
 shasum -a 256 dist/Music-unsigned.ipa | sed 's|dist/||' > dist/Music-unsigned.ipa.sha256

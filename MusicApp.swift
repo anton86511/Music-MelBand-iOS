@@ -43,15 +43,15 @@ private struct StudioView: View {
                     )
 
                     VStack(alignment: .leading, spacing: 8) {
-                        Picker("分離模式", selection: $mode) {
+                        Picker("分離模型", selection: $mode) {
                             ForEach(SeparationMode.allCases) { mode in
                                 Text(mode.title).tag(mode)
                             }
                         }
-                        .pickerStyle(.segmented)
+                        .pickerStyle(.menu)
                         .disabled(studio.busy)
-                        Text(mode.modelName).font(.caption).foregroundStyle(.secondary)
-                        if mode == .fast {
+                        Text(mode.backend).font(.caption).foregroundStyle(.secondary)
+                        if mode.usesCoreML {
                             Text("建議保持畫面開啟以使用 GPU。")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
