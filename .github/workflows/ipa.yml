@@ -7,6 +7,7 @@ on:
       - "ORTBridge.*"
       - "project.yml"
       - "build-ipa.sh"
+      - "prepare-model.py"
       - ".github/workflows/ipa.yml"
   workflow_dispatch:
 
@@ -38,5 +39,5 @@ jobs:
           if gh release view "$release" >/dev/null 2>&1; then
             gh release upload "$release" dist/* --clobber
           else
-            gh release create "$release" dist/* --target "$GITHUB_SHA" --title "音樂 IPA · ${GITHUB_RUN_NUMBER}" --notes "LiveContainer 匯入版。首次使用需下載離線模型。音檔在 iPhone 本機分離。"
+            gh release create "$release" dist/* --target "$GITHUB_SHA" --title "音樂 IPA · ${GITHUB_RUN_NUMBER}" --notes "LiveContainer 匯入版。內建 Mel-Band RoFormer 模型，安裝後可直接離線去人聲。"
           fi
