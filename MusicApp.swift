@@ -44,14 +44,17 @@ private struct StudioView: View {
 
                     VStack(alignment: .leading, spacing: 8) {
                         Picker("分離模型", selection: $mode) {
-                            ForEach(SeparationMode.allCases) { mode in
+                            ForEach(SeparationMode.available) { mode in
                                 Text(mode.title).tag(mode)
                             }
                         }
                         .pickerStyle(.menu)
                         .disabled(studio.busy)
                         Text(mode.backend).font(.caption).foregroundStyle(.secondary)
-                        if mode.usesCoreML {
+                        if mode == .leapXeFast {
+                            Text("使用原始 Leap Xe 模型與混合精度推論。建議保持畫面開啟。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else if mode.usesCoreML {
                             Text("建議保持畫面開啟以使用 GPU。")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
@@ -84,9 +87,9 @@ private struct StudioView: View {
                     }
 
                     if !studio.busy {
-                        if mode == .leapXe && !studio.leapXeInstalled {
+                        if let variant = mode.leapXeVariant, !studio.installedLeapXe.contains(variant) {
                             prominent("下載 Leap Xe（約 268 MB）", systemImage: "arrow.down.circle") {
-                                studio.installLeapXe()
+                                studio.installLeapXe(variant)
                             }
                         } else {
                             prominent("選擇音樂檔案", systemImage: "plus") { pickingAudio = true }

@@ -2,6 +2,7 @@
 import argparse
 import sys
 from pathlib import Path
+from time import perf_counter
 
 import coremltools as ct
 import numpy as np
@@ -46,6 +47,10 @@ def main():
     mix = z.permute(0, 3, 1, 2).reshape(1, 4, 1025, 193).numpy()
     model = ct.models.MLModel(str(args.package), compute_units=ct.ComputeUnit.CPU_AND_GPU)
     output = model.predict({"mix": mix})["mask"]
+    start = perf_counter()
+    model.predict({"mix": mix})
+    seconds = perf_counter() - start
+    print(f"{args.package.stem} macOS Core ML warm prediction: {seconds:.2f} s per 2.23 s window", flush=True)
     if output.shape != (1, 4, 1025, 193) or not np.isfinite(output).all():
         raise ValueError("Leap Xe returned invalid predictions.")
     gain = output[0, ::2] + 1j * output[0, 1::2]

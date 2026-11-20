@@ -9,7 +9,9 @@ final class Studio: ObservableObject {
     @Published private(set) var status = ""
     @Published private(set) var progress: Double?
     @Published private(set) var busy = false
-    @Published private(set) var leapXeInstalled = LeapXeInstaller.modelURL != nil
+    @Published private(set) var installedLeapXe = Set(
+        LeapXeInstaller.Variant.allCases.filter { LeapXeInstaller.modelURL(for: $0) != nil }
+    )
     @Published private(set) var separating = false
     @Published private(set) var canPlaySource = false
     @Published private(set) var playingSource = false
@@ -24,16 +26,16 @@ final class Studio: ObservableObject {
     private var sourceURL: URL?
     private var playbackMonitor: Task<Void, Never>?
 
-    func installLeapXe() {
-        guard !busy, !leapXeInstalled else { return }
+    func installLeapXe(_ variant: LeapXeInstaller.Variant) {
+        guard !busy, !installedLeapXe.contains(variant) else { return }
         busy = true
         error = nil
         status = "正在下載與安裝 Leap Xe，請保持 App 開啟。"
         Task {
             defer { busy = false }
             do {
-                try await LeapXeInstaller.install()
-                leapXeInstalled = true
+                try await LeapXeInstaller.install(variant)
+                installedLeapXe.insert(variant)
                 status = "Leap Xe 已安裝，可以離線去人聲。"
             } catch {
                 status = ""
@@ -105,6 +107,13 @@ final class Studio: ObservableObject {
                                 } else {
                                     self.status = continued ? "正在分離，可嘗試鎖屏。" : "正在分離。若要鎖屏，可先播放原曲。"
                                 }
+                            }
+                        } cooling: { paused in
+                            Task { @MainActor [weak self] in
+                                guard let self, self.control === job, (try? job.check()) != nil else { return }
+                                self.status = paused
+                                    ? "iPhone 溫度偏高，已暫停分離。降溫後會自動繼續。"
+                                    : "正在分離，請保持畫面開啟。"
                             }
                         } progress: { fraction in
                             Task { @MainActor [weak self] in

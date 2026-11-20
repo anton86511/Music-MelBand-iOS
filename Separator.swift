@@ -22,20 +22,45 @@ enum SeparationError: LocalizedError {
 }
 
 final class SeparationControl: @unchecked Sendable {
-    private let lock = NSLock()
+    private let condition = NSCondition()
     private var stopped = false
 
     func cancel() {
-        lock.lock()
+        condition.lock()
         stopped = true
-        lock.unlock()
+        condition.broadcast()
+        condition.unlock()
     }
 
     func check() throws {
-        lock.lock()
+        condition.lock()
         let cancelled = stopped
-        lock.unlock()
+        condition.unlock()
         if cancelled { throw CancellationError() }
+    }
+
+    func waitForCooling(report: (Bool) -> Void) throws {
+        var paused = false
+        while true {
+            try check()
+            switch ProcessInfo.processInfo.thermalState {
+            case .nominal, .fair:
+                if paused { report(false) }
+                return
+            case .serious, .critical:
+                break
+            @unknown default:
+                if paused { report(false) }
+                return
+            }
+            if !paused {
+                paused = true
+                report(true)
+            }
+            condition.lock()
+            if !stopped { _ = condition.wait(until: Date().addingTimeInterval(1)) }
+            condition.unlock()
+        }
     }
 }
 
@@ -43,6 +68,7 @@ enum SeparationMode: String, CaseIterable, Identifiable, Sendable {
     case fast
     case hq4
     case quality
+    case leapXeFast
     case leapXe
 
     var id: Self { self }
@@ -52,12 +78,26 @@ enum SeparationMode: String, CaseIterable, Identifiable, Sendable {
         case .fast: return "UVR Inst HQ 3"
         case .hq4: return "UVR Inst HQ 4"
         case .quality: return "Mel-Band RoFormer"
+        case .leapXeFast: return "BS-RoFormer Leap Xe（省熱）"
         case .leapXe: return "BS-RoFormer Leap Xe"
         }
     }
 
     var usesCoreML: Bool { self != .quality }
-    var predictsVocals: Bool { self == .quality || self == .leapXe }
+    var leapXeVariant: LeapXeInstaller.Variant? {
+        switch self {
+        case .leapXe: return .original
+        case .leapXeFast: return .fast
+        default: return nil
+        }
+    }
+
+    var predictsVocals: Bool { self == .quality || leapXeVariant != nil }
+
+    static var available: [Self] {
+        if #available(iOS 18.0, *) { return allCases }
+        return allCases.filter { $0 != .leapXeFast }
+    }
 
     var backend: String {
         usesCoreML ? "Core ML · GPU 加速" : "ONNX Runtime · CPU"
@@ -68,7 +108,7 @@ enum SeparationMode: String, CaseIterable, Identifiable, Sendable {
         case .fast: return bundle.url(forResource: "InstHQ3", withExtension: "mlmodelc")
         case .hq4: return bundle.url(forResource: "InstHQ4", withExtension: "mlmodelc")
         case .quality: return bundle.url(forResource: "melband-phone", withExtension: "onnx")
-        case .leapXe: return LeapXeInstaller.modelURL
+        case .leapXe, .leapXeFast: return leapXeVariant.flatMap(LeapXeInstaller.modelURL(for:))
         }
     }
 }
@@ -77,7 +117,7 @@ struct SeparationEngine {
     static let sampleRate = 44_100
 
     static func run(input: URL, output: URL, model: URL, mode: SeparationMode, control: SeparationControl,
-                    decodeProgress: () -> Void, progress: (Double) -> Void) throws {
+                    decodeProgress: () -> Void, cooling: (Bool) -> Void, progress: (Double) -> Void) throws {
         let reader = try AudioReader(url: input)
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
@@ -103,7 +143,8 @@ struct SeparationEngine {
                                                   inputName: "input", outputName: "output", dataType: .float16)
             predict = { try separator.predict($0) }
             overlap = 24_576
-        case .leapXe:
+        case .leapXe, .leapXeFast:
+            try control.waitForCooling(report: cooling)
             fft = try Spectrogram(size: 2_048, hop: 512, frames: 193, includeNyquist: true)
             let separator = try SpectrogramCoreML(url: model, bins: fft.bins, frames: fft.frames,
                                                   inputName: "mix", outputName: "mask", dataType: .float32)
@@ -146,6 +187,7 @@ struct SeparationEngine {
                 }
             }
 
+            if mode.leapXeVariant != nil { try control.waitForCooling(report: cooling) }
             try autoreleasepool {
                 var mix = fft.analyze(window)
                 try control.check()

@@ -3,12 +3,27 @@ import CryptoKit
 import Foundation
 
 enum LeapXeInstaller {
+    enum Variant: CaseIterable, Hashable, Sendable {
+        case original
+        case fast
+
+        var template: String {
+            self == .fast ? "LeapXeFastTemplate" : "LeapXeTemplate"
+        }
+
+        var folder: URL {
+            let version = self == .fast ? "LeapXe-fast-v1" : "LeapXe-v1"
+            return URL.applicationSupportDirectory.appendingPathComponent("MusicStudio/\(version)", isDirectory: true)
+        }
+
+        var installed: URL {
+            folder.appendingPathComponent("LeapXe.mlmodelc", isDirectory: true)
+        }
+    }
+
     private static let checkpointURL = URL(string: "https://huggingface.co/pcunwa/BS-Roformer-Leap/resolve/4e47d6662ae82eaa8b4ac4329fe66099a843b48e/Xe/bs_leap_xe_voc.ckpt")!
     private static let checkpointSHA = "b739c1d2d87a81cd3dd3844ed9ad0bd678708c7a0a761a03a1aaff9af79a096d"
     private static let checkpointLength: UInt64 = 267_796_851
-    private static let folder = URL.applicationSupportDirectory
-        .appendingPathComponent("MusicStudio/LeapXe-v1", isDirectory: true)
-    private static let installed = folder.appendingPathComponent("LeapXe.mlmodelc", isDirectory: true)
 
     private struct Recipe: Decodable {
         let modelSHA: String
@@ -37,13 +52,15 @@ enum LeapXeInstaller {
         }
     }
 
-    static var modelURL: URL? {
-        FileManager.default.fileExists(atPath: installed.path) ? installed : nil
+    static func modelURL(for variant: Variant) -> URL? {
+        let installed = variant.installed
+        return FileManager.default.fileExists(atPath: installed.path) ? installed : nil
     }
 
-    static func install() async throws {
-        if modelURL != nil { return }
-        guard let root = Bundle.main.resourceURL?.appendingPathComponent("LeapXeTemplate", isDirectory: true),
+    static func install(_ variant: Variant) async throws {
+        if modelURL(for: variant) != nil { return }
+        let folder = variant.folder
+        guard let root = Bundle.main.resourceURL?.appendingPathComponent(variant.template, isDirectory: true),
               FileManager.default.fileExists(atPath: root.appendingPathComponent("plan.json").path)
         else { throw InstallError.resources }
 
@@ -66,7 +83,7 @@ enum LeapXeInstaller {
         defer { try? fm.removeItem(at: compiled) }
         let staged = temp.appendingPathComponent("Compiled.mlmodelc", isDirectory: true)
         try fm.copyItem(at: compiled, to: staged)
-        try fm.moveItem(at: staged, to: installed)
+        try fm.moveItem(at: staged, to: variant.installed)
     }
 
     static func assemble(checkpoint: URL, template root: URL, into package: URL) throws {
@@ -108,7 +125,7 @@ enum LeapXeInstaller {
             case "literal":
                 input = constants
                 count = patch.count
-            case "f32":
+            case "f32", "f16":
                 input = source
                 count = 4 * patch.count
             default:
@@ -118,10 +135,25 @@ enum LeapXeInstaller {
             try input.seek(toOffset: patch.source)
             let data = try read(input, count: count)
             try output.seek(toOffset: patch.offset)
-            try output.write(contentsOf: data)
+            try output.write(contentsOf: patch.kind == "f16" ? halfPrecision(data) : data)
         }
         try modelFile.synchronize()
         try weightsFile.synchronize()
+    }
+
+    private static func halfPrecision(_ source: Data) -> Data {
+        var result = Data(count: source.count / 2)
+        result.withUnsafeMutableBytes { destination in
+            source.withUnsafeBytes { input in
+                let output = destination.bindMemory(to: UInt16.self)
+                for i in output.indices {
+                    let bits = input.loadUnaligned(fromByteOffset: 4 * i, as: UInt32.self)
+                    let value = Float(bitPattern: UInt32(littleEndian: bits))
+                    output[i] = Float16(value).bitPattern.littleEndian
+                }
+            }
+        }
+        return result
     }
 
     private static func read(_ file: FileHandle, count: Int) throws -> Data {
