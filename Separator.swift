@@ -7,7 +7,6 @@ enum SeparationError: LocalizedError {
     case decode(OSStatus)
     case empty
     case fft
-    case inference(String)
     case modelOutput
 
     var errorDescription: String? {
@@ -15,7 +14,6 @@ enum SeparationError: LocalizedError {
         case .decode(let code): return "iPhone 無法解碼這個檔案（\(code)）。請確認檔案可播放且沒有 DRM 保護。"
         case .empty: return "檔案裡沒有可用的音訊。"
         case .fft: return "無法初始化音訊處理。"
-        case .inference(let detail): return "本機模型執行失敗。\(detail)"
         case .modelOutput: return "模型傳回無效的結果。"
         }
     }
@@ -65,51 +63,28 @@ final class SeparationControl: @unchecked Sendable {
 }
 
 enum SeparationMode: String, CaseIterable, Identifiable, Sendable {
-    case fast
     case hq4
-    case quality
-    case leapXeFast
-    case leapXe
+    case hq3
 
     var id: Self { self }
 
     var title: String {
         switch self {
-        case .fast: return "UVR Inst HQ 3"
         case .hq4: return "UVR Inst HQ 4"
-        case .quality: return "Mel-Band RoFormer"
-        case .leapXeFast: return "BS-RoFormer Leap Xe（省熱）"
-        case .leapXe: return "BS-RoFormer Leap Xe"
+        case .hq3: return "UVR Inst HQ 3"
         }
     }
 
-    var usesCoreML: Bool { self != .quality }
-    var leapXeVariant: LeapXeInstaller.Variant? {
+    var fftSize: Int {
         switch self {
-        case .leapXe: return .original
-        case .leapXeFast: return .fast
-        default: return nil
+        case .hq4: return 5_120
+        case .hq3: return 6_144
         }
-    }
-
-    var predictsVocals: Bool { self == .quality || leapXeVariant != nil }
-
-    static var available: [Self] {
-        if #available(iOS 18.0, *) { return allCases }
-        return allCases.filter { $0 != .leapXeFast }
-    }
-
-    var backend: String {
-        usesCoreML ? "Core ML · GPU 加速" : "ONNX Runtime · CPU"
     }
 
     func modelURL(in bundle: Bundle = .main) -> URL? {
-        switch self {
-        case .fast: return bundle.url(forResource: "InstHQ3", withExtension: "mlmodelc")
-        case .hq4: return bundle.url(forResource: "InstHQ4", withExtension: "mlmodelc")
-        case .quality: return bundle.url(forResource: "melband-phone", withExtension: "onnx")
-        case .leapXe, .leapXeFast: return leapXeVariant.flatMap(LeapXeInstaller.modelURL(for:))
-        }
+        let resource = self == .hq4 ? "InstHQ4" : "InstHQ3"
+        return bundle.url(forResource: resource, withExtension: "mlmodelc")
     }
 }
 
@@ -132,34 +107,10 @@ struct SeparationEngine {
         try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
                                               ofItemAtPath: output.path)
         decodeProgress()
-        let fft: Spectrogram
-        let predict: (inout [Float]) throws -> [Float]
-        let overlap: Int
-        switch mode {
-        case .fast, .hq4:
-            let fftSize = mode == .hq4 ? 5_120 : 6_144
-            fft = try Spectrogram(size: fftSize, hop: 1_024, frames: 256, includeNyquist: false)
-            let separator = try SpectrogramCoreML(url: model, bins: fft.bins, frames: fft.frames,
-                                                  inputName: "input", outputName: "output", dataType: .float16)
-            predict = { try separator.predict($0) }
-            overlap = 24_576
-        case .leapXe, .leapXeFast:
-            try control.waitForCooling(report: cooling)
-            fft = try Spectrogram(size: 2_048, hop: 512, frames: 193, includeNyquist: true)
-            let separator = try SpectrogramCoreML(url: model, bins: fft.bins, frames: fft.frames,
-                                                  inputName: "mix", outputName: "mask", dataType: .float32)
-            predict = { mix in
-                var mask = try separator.predict(mix)
-                applyVocalMask(&mask, to: mix, planeSize: fft.bins * fft.frames, dcFrames: fft.frames)
-                return mask
-            }
-            overlap = 24_576
-        case .quality:
-            fft = try Spectrogram(size: 2_048, hop: 441, frames: 201, includeNyquist: true)
-            let separator = try RoFormerSeparator(url: model)
-            predict = { try separator.vocals(&$0, planeSize: fft.bins * fft.frames) }
-            overlap = 8_820
-        }
+        try control.waitForCooling(report: cooling)
+        let fft = try Spectrogram(size: mode.fftSize, hop: 1_024, frames: 256)
+        let separator = try SpectrogramCoreML(url: model, bins: fft.bins, frames: fft.frames)
+        let overlap = 24_576
         let chunkSize = fft.sampleCount
         let step = chunkSize - overlap
 
@@ -187,13 +138,13 @@ struct SeparationEngine {
                 }
             }
 
-            if mode.leapXeVariant != nil { try control.waitForCooling(report: cooling) }
+            try control.waitForCooling(report: cooling)
             try autoreleasepool {
-                var mix = fft.analyze(window)
+                let mix = fft.analyze(window)
                 try control.check()
-                let stem = try predict(&mix)
+                let stem = try separator.predict(mix)
                 try control.check()
-                var instrumental = try fft.reconstruct(window, stem: stem, subtract: mode.predictsVocals)
+                var instrumental = try fft.reconstruct(stem)
                 if !first {
                     for c in 0..<2 {
                         for i in 0..<min(count, overlap) {
@@ -307,65 +258,16 @@ final class AudioReader {
     }
 }
 
-private final class RoFormerSeparator {
-    private let session: OpaquePointer
-
-    init(url: URL) throws {
-        let threads = Int32(min(4, max(1, ProcessInfo.processInfo.activeProcessorCount)))
-        var error = [CChar](repeating: 0, count: 1_024)
-        let capacity = error.count
-        guard let session = music_ort_open(url.path, threads, &error, capacity) else {
-            throw SeparationError.inference(String(cString: error))
-        }
-        self.session = session
-    }
-
-    deinit { music_ort_close(session) }
-
-    func vocals(_ mix: inout [Float], planeSize: Int) throws -> [Float] {
-        var mask = Array(repeating: Float.zero, count: mix.count)
-        var error = [CChar](repeating: 0, count: 1_024)
-        let capacity = error.count
-        let ran = mix.withUnsafeMutableBufferPointer { input in
-            mask.withUnsafeMutableBufferPointer { output in
-                music_ort_run(session, input.baseAddress!, output.baseAddress!, &error, capacity)
-            }
-        }
-        guard ran else { throw SeparationError.inference(String(cString: error)) }
-
-        applyVocalMask(&mask, to: mix, planeSize: planeSize, dcFrames: 201)
-        return mask
-    }
-}
-
-private func applyVocalMask(_ mask: inout [Float], to mix: [Float], planeSize: Int, dcFrames: Int) {
-    for channel in 0..<2 {
-        let real = 2 * channel * planeSize
-        let imag = real + planeSize
-        for i in 0..<planeSize {
-            let mr = mask[real + i]
-            let mi = mask[imag + i]
-            mask[real + i] = i < dcFrames ? 0 : mix[real + i] * mr - mix[imag + i] * mi
-            mask[imag + i] = i < dcFrames ? 0 : mix[real + i] * mi + mix[imag + i] * mr
-        }
-    }
-}
-
 private final class SpectrogramCoreML {
     private let model: MLModel
     private let input: MLMultiArray
     private let features: MLDictionaryFeatureProvider
     private let shape: [Int]
-    private let outputName: String
-    private let dataType: MLMultiArrayDataType
     private let contiguous: [Int]
     private let bins: Int
     private let frames: Int
 
-    init(url: URL, bins: Int, frames: Int, inputName: String, outputName: String,
-         dataType: MLMultiArrayDataType) throws {
-        self.outputName = outputName
-        self.dataType = dataType
+    init(url: URL, bins: Int, frames: Int) throws {
         let shape = [1, 4, bins, frames]
         self.shape = shape
         self.bins = bins
@@ -374,34 +276,22 @@ private final class SpectrogramCoreML {
         let configuration = MLModelConfiguration()
         configuration.computeUnits = .cpuAndGPU
         model = try MLModel(contentsOf: url, configuration: configuration)
-        input = try MLMultiArray(shape: shape.map { NSNumber(value: $0) }, dataType: dataType)
-        features = try MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(multiArray: input)])
+        input = try MLMultiArray(shape: shape.map { NSNumber(value: $0) }, dataType: .float16)
+        features = try MLDictionaryFeatureProvider(dictionary: ["input": MLFeatureValue(multiArray: input)])
     }
 
     func predict(_ mix: [Float]) throws -> [Float] {
         guard mix.count == input.count, input.strides.map(\.intValue) == contiguous
         else { throw SeparationError.modelOutput }
-        if dataType == .float32 {
-            let destination = input.dataPointer.assumingMemoryBound(to: Float.self)
-            mix.withUnsafeBufferPointer { destination.update(from: $0.baseAddress!, count: $0.count) }
-        } else {
-            let destination = input.dataPointer.assumingMemoryBound(to: Float16.self)
-            for i in mix.indices { destination[i] = Float16(mix[i]) }
-        }
+        let destination = input.dataPointer.assumingMemoryBound(to: Float16.self)
+        for i in mix.indices { destination[i] = Float16(mix[i]) }
         let prediction = try model.prediction(from: features)
-        guard let output = prediction.featureValue(for: outputName)?.multiArrayValue,
-              output.dataType == dataType,
+        guard let output = prediction.featureValue(for: "output")?.multiArrayValue,
+              output.dataType == .float16,
               output.shape.map(\.intValue) == shape
         else { throw SeparationError.modelOutput }
         let strides = output.strides.map(\.intValue)
         return withExtendedLifetime(output) {
-            if dataType == .float32 {
-                let source = output.dataPointer.assumingMemoryBound(to: Float.self)
-                if strides == contiguous {
-                    return Array(UnsafeBufferPointer(start: source, count: output.count))
-                }
-                return contiguousOutput(strides: strides, read: { source[$0] })
-            }
             let source = output.dataPointer.assumingMemoryBound(to: Float16.self)
             if strides == contiguous {
                 return (0..<output.count).map { Float(source[$0]) }
@@ -437,7 +327,7 @@ private final class Spectrogram {
     private let hann: [Float]
     private let synthesisScale: [Float]
 
-    init(size: Int, hop: Int, frames: Int, includeNyquist: Bool) throws {
+    init(size: Int, hop: Int, frames: Int) throws {
         let length = vDSP_Length(size)
         guard let forward = vDSP_DFT_zop_CreateSetup(nil, length, .FORWARD) else { throw SeparationError.fft }
         guard let inverse = vDSP_DFT_zop_CreateSetup(nil, length, .INVERSE) else {
@@ -460,7 +350,7 @@ private final class Spectrogram {
         self.synthesisScale = norm.map { 1 / (Float(size) * max($0, 0.000001)) }
         self.n = size
         self.half = half
-        self.bins = half + (includeNyquist ? 1 : 0)
+        self.bins = half
         self.frames = frames
         self.hop = hop
         self.sampleCount = count
@@ -506,8 +396,9 @@ private final class Spectrogram {
         return spec
     }
 
-    func reconstruct(_ audio: [[Float]], stem: [Float], subtract: Bool) throws -> [[Float]] {
-        var audioOut = audio
+    func reconstruct(_ stem: [Float]) throws -> [[Float]] {
+        var audioOut = [[Float]]()
+        audioOut.reserveCapacity(2)
         var re = Array(repeating: Float.zero, count: n)
         var im = re
         var signal = re
@@ -526,11 +417,9 @@ private final class Spectrogram {
                     let real = stem[realBase + index]
                     let imag = stem[imagBase + index]
                     re[bin] = real
-                    if bin < half {
-                        im[bin] = imag
-                        re[n - bin] = real
-                        im[n - bin] = -imag
-                    }
+                    im[bin] = imag
+                    re[n - bin] = real
+                    im[n - bin] = -imag
                 }
                 vDSP_DFT_Execute(inverse, re, im, &signal, &imaginarySignal)
                 let start = frame * hop - half
@@ -539,11 +428,10 @@ private final class Spectrogram {
                 }
             }
             for i in 0..<sampleCount {
-                let sample = reconstructed[i] * synthesisScale[i]
-                let result = subtract ? audio[channel][i] - sample : sample
-                guard result.isFinite else { throw SeparationError.modelOutput }
-                audioOut[channel][i] = result
+                reconstructed[i] *= synthesisScale[i]
+                guard reconstructed[i].isFinite else { throw SeparationError.modelOutput }
             }
+            audioOut.append(reconstructed)
         }
         return audioOut
     }

@@ -11,27 +11,13 @@ targets:
       - Studio.swift
       - Separator.swift
       - AudioImport.swift
-      - LeapXeInstaller.swift
-      - ORTBridge.c
-      - ORTBridge.h
-      - path: Build/melband-phone.onnx
-        buildPhase: resources
-      - path: MODEL-LICENSE.txt
-        buildPhase: resources
-      - path: Build/ORT/LICENSE
-        buildPhase: resources
     dependencies:
-      - framework: Build/ORT/onnxruntime.xcframework
-        embed: false
       - sdk: CoreML.framework
       - sdk: Accelerate.framework
       - sdk: Foundation.framework
-      - sdk: libc++.tbd
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: tw.anton86511.melband.music
-        HEADER_SEARCH_PATHS: "$(SRCROOT)/Build/ORT/Headers"
-        SWIFT_OBJC_BRIDGING_HEADER: ORTBridge.h
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGNING_ALLOWED: "NO"
@@ -39,11 +25,9 @@ targets:
       path: Build/Info.plist
       properties:
         CFBundleDisplayName: 音樂
-        CFBundleShortVersionString: "1.4.0"
-        CFBundleVersion: "7"
+        CFBundleShortVersionString: "1.5.0"
+        CFBundleVersion: "8"
         CFBundleDevelopmentRegion: zh-Hant
         UILaunchScreen: {}
         UIBackgroundModes:
           - audio
-        BGTaskSchedulerPermittedIdentifiers:
-          - tw.anton86511.melband.music.separation.*
