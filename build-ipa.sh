@@ -75,7 +75,7 @@ if [[ "${CI:-}" == true ]]; then
   fetch_checked https://librosa.org/data/audio/5703-47212-0000.ogg Build/LeapXeValidation.ogg \
     a284612b46af0535f7e1873758c4387bb8369f6dbbe192ffdec1f171108f98dd
   leapxe_ref=Build/LeapXeReference
-  leapxe_code="https://raw.githubusercontent.com/ZFTurbo/Music-Source-Separation-Training/e491b540cac3a91ba0d438984adab3cdcaf527e6/models/bs_roformer"
+  leapxe_code="https://raw.githubusercontent.com/ZFTurbo/Music-Source-Separation-Training/1f700c386e0dd763fe0a57242bb9420dce987354/models/bs_roformer"
   mkdir -p "$leapxe_ref/models/bs_roformer"
   fetch_checked "$leapxe_code/bs_roformer.py" "$leapxe_ref/models/bs_roformer/bs_roformer.py" \
     a6f670325cdb8a7a212914f62602119b23eb888df9bcfe4a85f9be74728b3ef4
