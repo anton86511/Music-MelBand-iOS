@@ -18,4 +18,4 @@ macOS 使用 Xcode 26 以上版本、XcodeGen 及 Python 3.12，執行 `bash bui
 
 UVR Inst HQ 3 權重由 Kimberley Jensen 與 Ultimate Vocal Remover 專案提供，Core ML 轉換來自 [Gyoom](https://huggingface.co/gyoom/UVR-MDX-CoreML)，授權隨 IPA 內附。
 
-UVR Inst HQ 4 的 ONNX 權重來自 [UVR_resources](https://huggingface.co/Politrees/UVR_resources)，打包時轉為 Core ML FP16。
+UVR Inst HQ 4 的 ONNX 權重來自 [UVR_resources](https://huggingface.co/Politrees/UVR_resources)，打包時轉為 Core ML，推論採 FP32。

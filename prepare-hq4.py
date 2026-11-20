@@ -1,4 +1,4 @@
-"""Convert the pinned UVR Inst HQ 4 ONNX model to the app's FP16 Core ML contract."""
+"""Convert the pinned UVR Inst HQ 4 ONNX model to the app's Core ML contract."""
 
 import argparse
 import platform
@@ -41,7 +41,7 @@ def main(source: Path, destination: Path):
         inputs=[ct.TensorType(name="input", shape=SHAPE, dtype=np.float16)],
         outputs=[ct.TensorType(name="output", dtype=np.float16)],
         convert_to="mlprogram",
-        compute_precision=ct.precision.FLOAT16,
+        compute_precision=ct.precision.FLOAT32,
         compute_units=ct.ComputeUnit.CPU_AND_GPU,
         minimum_deployment_target=ct.target.iOS16,
         skip_model_load=True,

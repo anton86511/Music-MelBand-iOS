@@ -43,7 +43,7 @@ test -d Build/CoreML/InstHQ3.mlmodelc
 hq4_source="https://huggingface.co/Politrees/UVR_resources/resolve/8cc4418"
 fetch_checked "$hq4_source/models/MDXNet/UVR-MDX-NET-Inst_HQ_4.onnx" Build/InstHQ4.onnx \
   3c4b5b9b05090fdf238f38ba5046813982d50e2a652e9cb3324ea79720c3c9c8
-if [[ ! -f Build/InstHQ4.mlpackage/Manifest.json ]]; then
+if [[ ! -f Build/InstHQ4.mlpackage/Manifest.json || prepare-hq4.py -nt Build/InstHQ4.mlpackage/Manifest.json ]]; then
   hq4_python="${HQ4_PYTHON:-python3.12}"
   if ! command -v "$hq4_python" >/dev/null && [[ -n "${RUNNER_TOOL_CACHE:-}" ]]; then
     for cached_python in "$RUNNER_TOOL_CACHE"/Python/3.12.*/arm64/bin/python3.12; do
@@ -56,6 +56,7 @@ if [[ ! -f Build/InstHQ4.mlpackage/Manifest.json ]]; then
   "$hq4_python" -m venv Build/HQ4Python
   Build/HQ4Python/bin/python -m pip install 'torch==2.9.1' 'torchvision==0.24.1' \
     'coremltools==9.0' 'onnx2torch==1.5.15' 'onnx==1.23.2' 'onnxruntime==1.24.2' 'numpy<2.3'
+  rm -rf Build/InstHQ4.mlpackage
   Build/HQ4Python/bin/python prepare-hq4.py Build/InstHQ4.onnx Build/InstHQ4.mlpackage
 fi
 xcrun --sdk iphoneos coremlcompiler compile Build/InstHQ4.mlpackage Build/CoreML
