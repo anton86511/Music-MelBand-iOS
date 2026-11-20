@@ -43,6 +43,7 @@ enum SeparationMode: String, CaseIterable, Identifiable, Sendable {
     case fast
     case hq4
     case quality
+    case leapXe
 
     var id: Self { self }
 
@@ -51,10 +52,12 @@ enum SeparationMode: String, CaseIterable, Identifiable, Sendable {
         case .fast: return "UVR Inst HQ 3"
         case .hq4: return "UVR Inst HQ 4"
         case .quality: return "Mel-Band RoFormer"
+        case .leapXe: return "BS-RoFormer Leap Xe"
         }
     }
 
     var usesCoreML: Bool { self != .quality }
+    var predictsVocals: Bool { self == .quality || self == .leapXe }
 
     var backend: String {
         usesCoreML ? "Core ML · GPU 加速" : "ONNX Runtime · CPU"
@@ -65,6 +68,7 @@ enum SeparationMode: String, CaseIterable, Identifiable, Sendable {
         case .fast: return bundle.url(forResource: "InstHQ3", withExtension: "mlmodelc")
         case .hq4: return bundle.url(forResource: "InstHQ4", withExtension: "mlmodelc")
         case .quality: return bundle.url(forResource: "melband-phone", withExtension: "onnx")
+        case .leapXe: return LeapXeInstaller.modelURL
         }
     }
 }
@@ -95,8 +99,19 @@ struct SeparationEngine {
         case .fast, .hq4:
             let fftSize = mode == .hq4 ? 5_120 : 6_144
             fft = try Spectrogram(size: fftSize, hop: 1_024, frames: 256, includeNyquist: false)
-            let separator = try MDXSeparator(url: model, bins: fft.bins, frames: fft.frames)
-            predict = { try separator.instrumental($0) }
+            let separator = try SpectrogramCoreML(url: model, bins: fft.bins, frames: fft.frames,
+                                                  inputName: "input", outputName: "output", dataType: .float16)
+            predict = { try separator.predict($0) }
+            overlap = 24_576
+        case .leapXe:
+            fft = try Spectrogram(size: 2_048, hop: 512, frames: 193, includeNyquist: true)
+            let separator = try SpectrogramCoreML(url: model, bins: fft.bins, frames: fft.frames,
+                                                  inputName: "mix", outputName: "mask", dataType: .float32)
+            predict = { mix in
+                var mask = try separator.predict(mix)
+                applyVocalMask(&mask, to: mix, planeSize: fft.bins * fft.frames, dcFrames: fft.frames)
+                return mask
+            }
             overlap = 24_576
         case .quality:
             fft = try Spectrogram(size: 2_048, hop: 441, frames: 201, includeNyquist: true)
@@ -136,7 +151,7 @@ struct SeparationEngine {
                 try control.check()
                 let stem = try predict(&mix)
                 try control.check()
-                var instrumental = try fft.reconstruct(window, stem: stem, subtract: mode == .quality)
+                var instrumental = try fft.reconstruct(window, stem: stem, subtract: mode.predictsVocals)
                 if !first {
                     for c in 0..<2 {
                         for i in 0..<min(count, overlap) {
@@ -276,31 +291,39 @@ private final class RoFormerSeparator {
         }
         guard ran else { throw SeparationError.inference(String(cString: error)) }
 
-        let dcFrames = 201
-        for channel in 0..<2 {
-            let real = 2 * channel * planeSize
-            let imag = real + planeSize
-            for i in 0..<planeSize {
-                let mr = mask[real + i]
-                let mi = mask[imag + i]
-                mask[real + i] = i < dcFrames ? 0 : mix[real + i] * mr - mix[imag + i] * mi
-                mask[imag + i] = i < dcFrames ? 0 : mix[real + i] * mi + mix[imag + i] * mr
-            }
-        }
+        applyVocalMask(&mask, to: mix, planeSize: planeSize, dcFrames: 201)
         return mask
     }
 }
 
-private final class MDXSeparator {
+private func applyVocalMask(_ mask: inout [Float], to mix: [Float], planeSize: Int, dcFrames: Int) {
+    for channel in 0..<2 {
+        let real = 2 * channel * planeSize
+        let imag = real + planeSize
+        for i in 0..<planeSize {
+            let mr = mask[real + i]
+            let mi = mask[imag + i]
+            mask[real + i] = i < dcFrames ? 0 : mix[real + i] * mr - mix[imag + i] * mi
+            mask[imag + i] = i < dcFrames ? 0 : mix[real + i] * mi + mix[imag + i] * mr
+        }
+    }
+}
+
+private final class SpectrogramCoreML {
     private let model: MLModel
     private let input: MLMultiArray
     private let features: MLDictionaryFeatureProvider
     private let shape: [Int]
+    private let outputName: String
+    private let dataType: MLMultiArrayDataType
     private let contiguous: [Int]
     private let bins: Int
     private let frames: Int
 
-    init(url: URL, bins: Int, frames: Int) throws {
+    init(url: URL, bins: Int, frames: Int, inputName: String, outputName: String,
+         dataType: MLMultiArrayDataType) throws {
+        self.outputName = outputName
+        self.dataType = dataType
         let shape = [1, 4, bins, frames]
         self.shape = shape
         self.bins = bins
@@ -309,38 +332,54 @@ private final class MDXSeparator {
         let configuration = MLModelConfiguration()
         configuration.computeUnits = .cpuAndGPU
         model = try MLModel(contentsOf: url, configuration: configuration)
-        input = try MLMultiArray(shape: shape.map { NSNumber(value: $0) }, dataType: .float16)
-        features = try MLDictionaryFeatureProvider(dictionary: ["input": MLFeatureValue(multiArray: input)])
+        input = try MLMultiArray(shape: shape.map { NSNumber(value: $0) }, dataType: dataType)
+        features = try MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(multiArray: input)])
     }
 
-    func instrumental(_ mix: [Float]) throws -> [Float] {
+    func predict(_ mix: [Float]) throws -> [Float] {
         guard mix.count == input.count, input.strides.map(\.intValue) == contiguous
         else { throw SeparationError.modelOutput }
-        let destination = input.dataPointer.assumingMemoryBound(to: Float16.self)
-        for i in mix.indices { destination[i] = Float16(mix[i]) }
+        if dataType == .float32 {
+            let destination = input.dataPointer.assumingMemoryBound(to: Float.self)
+            mix.withUnsafeBufferPointer { destination.update(from: $0.baseAddress!, count: $0.count) }
+        } else {
+            let destination = input.dataPointer.assumingMemoryBound(to: Float16.self)
+            for i in mix.indices { destination[i] = Float16(mix[i]) }
+        }
         let prediction = try model.prediction(from: features)
-        guard let output = prediction.featureValue(for: "output")?.multiArrayValue,
-              output.dataType == .float16,
+        guard let output = prediction.featureValue(for: outputName)?.multiArrayValue,
+              output.dataType == dataType,
               output.shape.map(\.intValue) == shape
         else { throw SeparationError.modelOutput }
         let strides = output.strides.map(\.intValue)
-        let source = output.dataPointer.assumingMemoryBound(to: Float16.self)
         return withExtendedLifetime(output) {
+            if dataType == .float32 {
+                let source = output.dataPointer.assumingMemoryBound(to: Float.self)
+                if strides == contiguous {
+                    return Array(UnsafeBufferPointer(start: source, count: output.count))
+                }
+                return contiguousOutput(strides: strides, read: { source[$0] })
+            }
+            let source = output.dataPointer.assumingMemoryBound(to: Float16.self)
             if strides == contiguous {
                 return (0..<output.count).map { Float(source[$0]) }
             }
-            var values = Array(repeating: Float.zero, count: output.count)
-            for plane in 0..<4 {
-                for bin in 0..<bins {
-                    let start = (plane * bins + bin) * frames
-                    let offset = plane * strides[1] + bin * strides[2]
-                    for frame in 0..<frames {
-                        values[start + frame] = Float(source[offset + frame * strides[3]])
-                    }
+            return contiguousOutput(strides: strides, read: { Float(source[$0]) })
+        }
+    }
+
+    private func contiguousOutput(strides: [Int], read: (Int) -> Float) -> [Float] {
+        var values = Array(repeating: Float.zero, count: 4 * bins * frames)
+        for plane in 0..<4 {
+            for bin in 0..<bins {
+                let start = (plane * bins + bin) * frames
+                let offset = plane * strides[1] + bin * strides[2]
+                for frame in 0..<frames {
+                    values[start + frame] = read(offset + frame * strides[3])
                 }
             }
-            return values
         }
+        return values
     }
 }
 

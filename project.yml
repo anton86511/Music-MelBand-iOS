@@ -11,6 +11,7 @@ targets:
       - Studio.swift
       - Separator.swift
       - AudioImport.swift
+      - LeapXeInstaller.swift
       - ORTBridge.c
       - ORTBridge.h
       - path: Build/melband-phone.onnx
@@ -38,8 +39,8 @@ targets:
       path: Build/Info.plist
       properties:
         CFBundleDisplayName: 音樂
-        CFBundleShortVersionString: "1.2.0"
-        CFBundleVersion: "5"
+        CFBundleShortVersionString: "1.3.0"
+        CFBundleVersion: "6"
         CFBundleDevelopmentRegion: zh-Hant
         UILaunchScreen: {}
         UIBackgroundModes:

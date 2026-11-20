@@ -1,6 +1,6 @@
 # 音樂
 
-iPhone 本機去人聲工具。從分離模型選單選擇 UVR Inst HQ 3、UVR Inst HQ 4 或 Mel-Band RoFormer。兩款 UVR 模型透過 Core ML 啟用 GPU，Mel-Band RoFormer INT8 透過 ONNX Runtime 使用 CPU。音樂只在 iPhone 上解碼和分離。
+iPhone 本機去人聲工具。從分離模型選單選擇 UVR Inst HQ 3、UVR Inst HQ 4、Mel-Band RoFormer 或 BS-RoFormer Leap Xe。兩款 UVR 模型與 Leap Xe 透過 Core ML 啟用 GPU，Mel-Band RoFormer INT8 透過 ONNX Runtime 使用 CPU。音樂只在 iPhone 上解碼和分離。
 
 1. 到 Releases 下載 `Music-unsigned.ipa`，從 LiveContainer 匯入。LiveContainer 須完成 JIT-Less 簽署設定。
 2. 開啟「音樂」選取音檔。模型已隨 IPA 內建，可直接離線使用。
@@ -19,3 +19,9 @@ macOS 使用 Xcode 26 以上版本、XcodeGen 及 Python 3.12，執行 `bash bui
 UVR Inst HQ 3 權重由 Kimberley Jensen 與 Ultimate Vocal Remover 專案提供，Core ML 轉換來自 [Gyoom](https://huggingface.co/gyoom/UVR-MDX-CoreML)，授權隨 IPA 內附。
 
 UVR Inst HQ 4 的 ONNX 權重來自 [UVR_resources](https://huggingface.co/Politrees/UVR_resources)，打包時轉為 Core ML，推論採 FP32。
+
+## BS-RoFormer Leap Xe
+
+選擇 Leap Xe 後，點「下載 Leap Xe」。App 從 [pcunwa 的原始模型頁](https://huggingface.co/pcunwa/BS-Roformer-Leap/tree/main/Xe) 下載並驗證約 268 MB 的人聲權重，在裝置上組裝、編譯並儲存 Core ML 模型。之後可離線處理。Leap Xe 用約 2.23 秒的交疊視窗控制裝置記憶體，分離結果可能與原始長視窗設定有差異。
+
+CI 會從相同的作者檢查點重建模型並驗證 Core ML 輸出。

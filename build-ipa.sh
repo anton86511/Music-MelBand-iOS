@@ -61,6 +61,16 @@ if [[ ! -f Build/InstHQ4.mlpackage/Manifest.json || prepare-hq4.py -nt Build/Ins
 fi
 xcrun --sdk iphoneos coremlcompiler compile Build/InstHQ4.mlpackage Build/CoreML
 test -d Build/CoreML/InstHQ4.mlmodelc
+mkdir -p Build/LeapXeResources
+unzip -oq LeapXeTemplate.zip -d Build/LeapXeResources
+test -f Build/LeapXeResources/LeapXeTemplate/plan.json
+if [[ "${CI:-}" == true ]]; then
+  leapxe_source="https://huggingface.co/pcunwa/BS-Roformer-Leap/resolve/4e47d6662ae82eaa8b4ac4329fe66099a843b48e/Xe/bs_leap_xe_voc.ckpt"
+  fetch_checked "$leapxe_source" Build/LeapXe-author.ckpt \
+    b739c1d2d87a81cd3dd3844ed9ad0bd678708c7a0a761a03a1aaff9af79a096d
+  Build/HQ4Python/bin/python validate-leapxe.py Build/LeapXeResources/LeapXeTemplate \
+    Build/LeapXe-author.ckpt Build/LeapXeValidation.mlpackage LeapXe-reference.json
+fi
 xcodegen generate
 xcodebuild -project Music.xcodeproj -scheme Music -configuration Release \
   -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath Build/Derived \
@@ -69,12 +79,14 @@ mkdir -p Build/Package/Payload dist
 ditto Build/Derived/Build/Products/Release-iphoneos/Music.app Build/Package/Payload/Music.app
 ditto Build/CoreML/InstHQ3.mlmodelc Build/Package/Payload/Music.app/InstHQ3.mlmodelc
 ditto Build/CoreML/InstHQ4.mlmodelc Build/Package/Payload/Music.app/InstHQ4.mlmodelc
+ditto Build/LeapXeResources/LeapXeTemplate Build/Package/Payload/Music.app/LeapXeTemplate
 cp Build/MDX-LICENSE.txt Build/Package/Payload/Music.app/
 rm -f dist/Music-unsigned.ipa
 (cd Build/Package && zip -qry ../../dist/Music-unsigned.ipa Payload)
 unzip -tq dist/Music-unsigned.ipa
 unzip -Z1 dist/Music-unsigned.ipa | grep -F 'Payload/Music.app/InstHQ3.mlmodelc/' >/dev/null
 unzip -Z1 dist/Music-unsigned.ipa | grep -F 'Payload/Music.app/InstHQ4.mlmodelc/' >/dev/null
+unzip -Z1 dist/Music-unsigned.ipa | grep -Fx 'Payload/Music.app/LeapXeTemplate/plan.json' >/dev/null
 unzip -p dist/Music-unsigned.ipa Payload/Music.app/melband-phone.onnx | shasum -a 256 | grep -Fq fb25aa57aa8c90383ca6d74474abd759d7fc32f4d12642722b0944b8c65690a9
 /usr/libexec/PlistBuddy -c 'Print CFBundleDisplayName' Build/Package/Payload/Music.app/Info.plist | grep -Fx '音樂'
 shasum -a 256 dist/Music-unsigned.ipa | sed 's|dist/||' > dist/Music-unsigned.ipa.sha256

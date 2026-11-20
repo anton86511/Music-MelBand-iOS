@@ -84,7 +84,13 @@ private struct StudioView: View {
                     }
 
                     if !studio.busy {
-                        prominent("選擇音樂檔案", systemImage: "plus") { pickingAudio = true }
+                        if mode == .leapXe && !studio.leapXeInstalled {
+                            prominent("下載 Leap Xe（約 268 MB）", systemImage: "arrow.down.circle") {
+                                studio.installLeapXe()
+                            }
+                        } else {
+                            prominent("選擇音樂檔案", systemImage: "plus") { pickingAudio = true }
+                        }
                     }
                     if studio.canPlaySource {
                         Button(action: studio.toggleSourcePlayback) {

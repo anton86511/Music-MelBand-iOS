@@ -9,6 +9,7 @@ final class Studio: ObservableObject {
     @Published private(set) var status = ""
     @Published private(set) var progress: Double?
     @Published private(set) var busy = false
+    @Published private(set) var leapXeInstalled = LeapXeInstaller.modelURL != nil
     @Published private(set) var separating = false
     @Published private(set) var canPlaySource = false
     @Published private(set) var playingSource = false
@@ -22,6 +23,24 @@ final class Studio: ObservableObject {
     private var sourcePlayer: AVAudioPlayer?
     private var sourceURL: URL?
     private var playbackMonitor: Task<Void, Never>?
+
+    func installLeapXe() {
+        guard !busy, !leapXeInstalled else { return }
+        busy = true
+        error = nil
+        status = "正在下載與安裝 Leap Xe，請保持 App 開啟。"
+        Task {
+            defer { busy = false }
+            do {
+                try await LeapXeInstaller.install()
+                leapXeInstalled = true
+                status = "Leap Xe 已安裝，可以離線去人聲。"
+            } catch {
+                status = ""
+                self.error = error.localizedDescription
+            }
+        }
+    }
 
     func separate(_ input: URL, mode: SeparationMode) {
         guard !busy else { return }
