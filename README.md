@@ -25,3 +25,5 @@ UVR Inst HQ 4 的 ONNX 權重來自 [UVR_resources](https://huggingface.co/Polit
 選擇 Leap Xe 後，點「下載 Leap Xe」。App 從 [pcunwa 的原始模型頁](https://huggingface.co/pcunwa/BS-Roformer-Leap/tree/main/Xe) 下載並驗證約 268 MB 的人聲權重，在裝置上組裝、編譯並儲存 Core ML 模型。之後可離線處理。Leap Xe 以 FP32 推論，使用約 2.23 秒的交疊視窗控制裝置記憶體，分離結果可能與原始長視窗設定有差異。
 
 CI 會從相同的作者檢查點重建模型並驗證 Core ML 輸出。
+
+CI 語音測試片段節錄自 LibriSpeech 的 Ashiel Mystery（Garth Comira 朗讀），來源為 [librosa 範例音檔](https://librosa.org/data/audio/5703-47212-0000.ogg)，資料集採 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)。CI 會從來源下載，裁切、重新取樣並混入合成伴奏後驗證。測試音檔只在 CI 使用。

@@ -71,8 +71,22 @@ if [[ "${CI:-}" == true ]]; then
   xcrun --sdk macosx swiftc -O -parse-as-library LeapXeInstaller.swift LeapXeInstallCheck.swift \
     -o Build/LeapXeInstallCheck
   Build/LeapXeInstallCheck Build/LeapXe-author.ckpt Build/LeapXeResources/LeapXeTemplate Build/LeapXeValidation.mlpackage
-  # Verify the synthesized vocal waveform produced by the installed model.
-  Build/HQ4Python/bin/python validate-leapxe.py Build/LeapXeValidation.mlpackage LeapXe-reference.json
+  # Temporary CI fixture from LibriSpeech (CC BY 4.0), Ashiel Mystery read by Garth Comira.
+  fetch_checked https://librosa.org/data/audio/5703-47212-0000.ogg Build/LeapXeValidation.ogg \
+    a284612b46af0535f7e1873758c4387bb8369f6dbbe192ffdec1f171108f98dd
+  leapxe_ref=Build/LeapXeReference
+  leapxe_code="https://raw.githubusercontent.com/ZFTurbo/Music-Source-Separation-Training/e491b540cac3a91ba0d438984adab3cdcaf527e6/models/bs_roformer"
+  mkdir -p "$leapxe_ref/models/bs_roformer"
+  fetch_checked "$leapxe_code/bs_roformer.py" "$leapxe_ref/models/bs_roformer/bs_roformer.py" \
+    a6f670325cdb8a7a212914f62602119b23eb888df9bcfe4a85f9be74728b3ef4
+  fetch_checked "$leapxe_code/attend.py" "$leapxe_ref/models/bs_roformer/attend.py" \
+    c7abbc40a3fd20ff7f6001fa9f8ee9ad5df6452272712a5e719b8f8468bf2223
+  fetch_checked "${leapxe_source%/*}/leap_xe_config_voc.yaml" "$leapxe_ref/config.yaml" \
+    d3cb8c84be2e9bcbc64c1086e2256dc097ab5addebc5ce507818e90ff8cbdc25
+  Build/HQ4Python/bin/python -m pip install 'einops==0.8.1' 'rotary-embedding-torch==0.8.9' \
+    'beartype==0.21.0' 'soundfile==0.13.1' 'scipy==1.15.3'
+  Build/HQ4Python/bin/python validate-leapxe.py Build/LeapXeValidation.mlpackage \
+    Build/LeapXe-author.ckpt Build/LeapXeValidation.ogg "$leapxe_ref"
 fi
 xcodegen generate
 xcodebuild -project Music.xcodeproj -scheme Music -configuration Release \
